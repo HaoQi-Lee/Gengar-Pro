@@ -1,0 +1,14 @@
+# R01 —— 真机冒烟：真实 Claude API（需 ANTHROPIC_API_KEY，缺则 Skip）+
+# 真实 sshd 容器。模型自主决策调用 system_info；断言从宽（OS / 内存
+# 关键词），只验证「真实模型 ↔ 工具 schema ↔ 执行链」兼容，不钉具体措辞。
+name: R01-real-smoke
+description: 真机冒烟——真实 API 驱动 system_info 并汇报 OS/内存
+llm: real
+hosts: 1
+inputs:
+  - 报告这台机器的操作系统和内存情况
+assertions:
+  - type: tool_called
+    spec: {tool: system_info, min_count: 1}
+  - type: response_contains
+    spec: {matches: "(?i)(linux|centos|ubuntu|内存|memory|GB)"}

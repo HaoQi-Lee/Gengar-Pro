@@ -1,0 +1,20 @@
+# E01 —— 单机系统信息：Agent 首回合调用 system_info（真实 SSH 到 sshd
+# 容器执行），次回合以终文本收束。验证：桩→Agent→Registry→SSH→audit
+# 全链路的最小闭环。
+name: E01-basic-os-info
+description: 单机系统信息——system_info 工具调用 + 回复关键词
+llm: stub
+hosts: 1
+script:
+  - tool_calls:
+      - id: t1
+        name: system_info
+        input: {}
+  - final_text: "系统信息收集完成：内核与发行版报告完毕。"
+inputs:
+  - 报告这台机器的操作系统信息
+assertions:
+  - type: tool_called
+    spec: {tool: system_info}
+  - type: response_contains
+    spec: {matches: "系统信息"}

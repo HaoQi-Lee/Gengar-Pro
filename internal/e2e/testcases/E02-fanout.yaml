@@ -1,0 +1,24 @@
+# E02 —— 双机 fan-out：一次 execute_command（hosts:["all"]）经 Registry
+# 分发到两台 sshd 容器，聚合结果回传桩，终文本收束。验证多主机语义：
+# audit 单条记录 Hosts 长度 = 2，stdout 出现两台的回显标记。
+name: E02-fanout
+description: 双机 fan-out——一次工具调用经 Registry 分发两台
+llm: stub
+hosts: 2
+script:
+  - tool_calls:
+      - id: t1
+        name: execute_command
+        input:
+          command: "echo gengar-e2e-fanout"
+          hosts: ["all"]
+  - final_text: "两台主机均已完成 gengar-e2e-fanout。"
+inputs:
+  - 在所有机器上执行 echo gengar-e2e-fanout
+assertions:
+  - type: tool_called
+    spec: {tool: execute_command}
+  - type: audit_hosts
+    spec: {tool: execute_command, count: 2}
+  - type: response_contains
+    spec: {matches: "gengar-e2e-fanout"}

@@ -1,0 +1,26 @@
+# E06 —— 巡检报告类长输出被 max_tokens 掐断（回归 f865015）：桩以
+# stop_reason=max_tokens 收束终回合（文本发完但停机原因非 end_turn），
+# 验证 agent 不静默——已生成的部分文本照常输出，且 stdout 留下截断
+# 告警（plain sink 的 ⚠️ 系统行），提示用户发「继续」补全。
+name: E06-max-tokens-truncation
+description: 终回合 stop_reason=max_tokens——部分文本保留 + 截断告警不静默
+llm: stub
+hosts: 1
+script:
+  - tool_calls:
+      - id: t1
+        name: execute_command
+        input:
+          command: "echo gengar-e2e-mt"
+          hosts: ["all"]
+  - final_text: "巡检报告：1. 资源水位正常；2. 服务健康；3."
+    stop_reason: max_tokens
+inputs:
+  - 输出巡检报告
+assertions:
+  - type: tool_called
+    spec: {tool: execute_command}
+  - type: response_contains
+    spec: {matches: "资源水位正常"} # 已生成部分不因异常停机丢失
+  - type: response_contains
+    spec: {matches: "被截断"} # ui.Warning 的截断告警必须出现在 stdout

@@ -1,0 +1,39 @@
+# Binaries（/gengar-server 为模块根 go build 产物；build/ 目录已随 Wails 桌面层删除）
+/gengar
+/gengar-pro
+/gengar-server
+*.exe
+
+# 前端构建产物：npm 依赖与 vite dist 均不入库；dist 由模块根 main.go 的
+# go:embed 消费（go build 前需先 cd frontend && npm run build）。
+frontend/node_modules/
+frontend/dist/
+
+# SQLite
+*.db
+*.sqlite
+
+# ANTLR generated
+internal/parser/oracle/*.go
+!internal/parser/oracle/doc.go
+internal/parser/mysql/*.go
+!internal/parser/mysql/doc.go
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.superpowers/
+.claude
+gengar.exe
+gengar-linux
+gengar.db
+docsbin/
+bin/gengar
+# docs 目录整体不入库（本地工作文档）；设计文档经 /psy-sync 归档到
+# .psy/（已跟踪）后源路径即弃用。
+docs

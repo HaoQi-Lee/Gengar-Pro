@@ -1,0 +1,25 @@
+# E07 —— 省略 hosts 的指令作用于默认目标（回归目标范围语义链 b446250/
+# de15f00/fcac5fc）：harness 全用例传 --pin-all（清单全集 = 默认目标），
+# 桩发出的工具调用不带 hosts 键——matchHosts 的 refs 空 → pinned 兜底
+# 路径必须把指令分发到全部主机，而不是漏发或反问。与 E02（显式
+# hosts:["all"]）互补，守护「省略主机名的指令作用于本次对话目标」。
+name: E07-default-target-omit
+description: 工具调用省略 hosts——默认目标（--pin-all 全集）兜底分发
+llm: stub
+hosts: 2
+script:
+  - tool_calls:
+      - id: t1
+        name: execute_command
+        input:
+          command: "echo gengar-e2e-default-target"
+  - final_text: "已在全部默认目标上完成 gengar-e2e-default-target。"
+inputs:
+  - 执行 echo gengar-e2e-default-target
+assertions:
+  - type: tool_called
+    spec: {tool: execute_command}
+  - type: audit_hosts
+    spec: {tool: execute_command, count: 2} # 省略 hosts = 全部默认目标
+  - type: response_contains
+    spec: {matches: "gengar-e2e-default-target"}

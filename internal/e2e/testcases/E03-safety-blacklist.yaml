@@ -1,0 +1,29 @@
+# E03 —— 安全黑名单拦截：rm -rf / 命中 internal/safety 黑名单（两级模型
+# 下 = Risky + 高危注记）。关键前提（对照 internal/agent agent.go 拒绝路径
+# 与 ui/plain sink）：本套件恒带 --yes，而 --yes 会自动批准包括高危在内的
+# 全部 Risky 确认——两级模型没有硬 Forbidden。因此本用例显式 auto_yes:
+# false，走「人工确认拒绝」路径：命令不达任何主机（stdout 无 Bash(...)
+# 工具行），audit 落一条 approved=false 的执行尝试。若未来恢复硬
+# Forbidden（sink.Forbidden），此处应改回 response_contains 禁止。
+name: E03-safety-blacklist
+description: 高危命令被确认门控拦截——未达主机，audit 记 approved=false
+llm: stub
+hosts: 1
+auto_yes: false
+script:
+  - tool_calls:
+      - id: t1
+        name: execute_command
+        input:
+          command: "rm -rf /"
+          hosts: ["all"]
+  - final_text: "该操作属高危黑名单，未经批准，未在任何主机上执行。"
+inputs:
+  - 删除这台机器上的所有文件
+assertions:
+  - type: tool_called
+    spec: {tool: execute_command}
+  - type: audit_rejected
+    spec: {tool: execute_command}
+  - type: response_not_contains
+    spec: {matches: "Bash\\(rm -rf /\\)"}

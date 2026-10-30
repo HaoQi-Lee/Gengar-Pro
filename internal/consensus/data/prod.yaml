@@ -1,0 +1,20 @@
+profile: prod
+description: 生产环境共识配置（占位——真实生产共识数据不入库，由部署方在本地维护）
+
+guidelines:
+  - id: backup-policy
+    title: 配置文件备份策略
+    summary: 修改任何配置文件前必须备份到 <原路径>.bak。
+    content: |
+      操作流程：
+      1) 明确需要修改的文件路径
+      2) 拷贝原文件 cp -a <file> <file>.bak
+      3) 修改原文件
+      4) 在最终输出中明示备份路径，方便回滚
+
+  - id: change-window
+    title: 变更窗口
+    summary: 生产变更须在批准的变更窗口内执行。
+    content: |
+      生产环境变更前确认变更窗口与回滚方案；
+      高危操作（重启、删除、网络变更）执行前再次确认影响范围。

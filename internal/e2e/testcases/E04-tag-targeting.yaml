@@ -1,0 +1,28 @@
+# E04 —— 标签定向：两台主机都打 web 标签，execute_command 的 hosts:["web"]
+# 经 Registry 解析为恰好这两台。audit_host_names 断言单条记录的 Hosts
+# 集合 == 两台主机名（序无关），比 audit_hosts 的数量断言更强——能抓住
+# 「数量对但解析到了错误主机」的回归。
+name: E04-tag-targeting
+description: 标签定向——hosts:["web"] 精确命中两台 web 主机
+llm: stub
+hosts: 2
+tags:
+  0: [web]
+  1: [web]
+script:
+  - tool_calls:
+      - id: t1
+        name: execute_command
+        input:
+          command: "echo e2e-tag"
+          hosts: ["web"]
+  - final_text: "web 机组的两台主机都已执行 e2e-tag。"
+inputs:
+  - 在 web 机组的所有机器上执行 echo e2e-tag
+assertions:
+  - type: tool_called
+    spec: {tool: execute_command}
+  - type: audit_host_names
+    spec: {tool: execute_command, names: [e2e-host-1, e2e-host-2]}
+  - type: response_contains
+    spec: {matches: "e2e-tag"}

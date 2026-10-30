@@ -1,0 +1,34 @@
+profile: dev
+description: 开发环境共识配置
+
+guidelines:
+  - id: http-proxy
+    title: HTTP 代理
+    summary: 开发环境 HTTP 代理地址
+    content: |
+      开发环境 HTTP 代理地址是 10.168.2.188:1080。
+
+  - id: yum-repo
+    title: YUM 源配置
+    summary: 开发环境 YUM 源地址
+    content: |
+      开发环境的 YUM 源 域名是 nexus3.showcai.com.cn:8081。通过/etc/os-release 了解到具体的操作系统之后 请访问具体的仓库路径。
+      例如centos7的路径则是 http://nexus3.showcai.com.cn:8081/repository/centos7。
+      例如Kylin操作系统的路径则是 http://nexus3.showcai.com.cn:8081/repository/kylin-sp3。
+      配置时建议写入 /etc/yum.repos.d/base.repo。如需禁用默认源，把 /etc/yum.repos.d/CentOS-*.repo 改名加 .bak 后缀。
+
+  - id: ntp-servers
+    title: NTP 服务器
+    summary: 开发环境 chronyd / ntpdate 应使用的 NTP 源
+    content: |
+      开发环境的 NTP 服务器是 10.141.32.133。
+
+  - id: backup-policy
+    title: 配置文件备份策略
+    summary: 修改任何配置文件前必须备份到 <原路径>.bak。
+    content: |
+      操作流程：
+      1) 明确需要修改的文件路径
+      2) 拷贝原文件 cp -a <file> <file>.bak
+      3) 修改原文件
+      4) 在最终输出中明示备份路径，方便回滚

@@ -1,0 +1,41 @@
+# E05 —— 记忆跨会话：两轮 headless 进程共用同一 DataDir（runs: 2）。
+# run 1 memory_write 落盘探测锚点；run 2 是全新进程（= 新会话），脚本调
+# memory_read 读回同一主机域。桩的 final_text 是脚本写死的（即使含锚点
+# 也只是平凡命中），真实断言是 memory_contains 直查落盘文件
+# dataDir/memory/e2e-host-1.json——绕过桩，验证 appcore→memory.Store 的
+# 持久化链路跨进程存活。
+name: E05-memory-cross-session
+description: 记忆跨会话——run1 落盘锚点，run2 新进程读回，文件直查命中
+llm: stub
+hosts: 1
+runs:
+  - script:
+      - tool_calls:
+          - id: w1
+            name: memory_write
+            input:
+              host: e2e-host-1
+              category: system_info
+              data:
+                anchor: e2e-anchor-7c4d91
+                note: cross-session probe
+      - final_text: "探测锚点 e2e-anchor-7c4d91 已写入这台机器的记忆。"
+    inputs:
+      - 把探测锚点记到这台机器的记忆里
+  - script:
+      - tool_calls:
+          - id: r1
+            name: memory_read
+            input:
+              host: e2e-host-1
+              category: system_info
+      - final_text: "跨会话读取完成：锚点 e2e-anchor-7c4d91 仍在记忆中。"
+    inputs:
+      - 读取这台机器的记忆
+assertions:
+  - type: tool_called
+    spec: {tool: memory_write}
+  - type: tool_called
+    spec: {tool: memory_read}
+  - type: memory_contains
+    spec: {host: e2e-host-1, matches: "e2e-anchor-7c4d91"}
