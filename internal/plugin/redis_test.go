@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+
+	"gengar-pro/internal/rdbparser"
 )
 
 func TestRedisPluginToolsRegistered(t *testing.T) {
@@ -162,6 +165,55 @@ func TestRedisDiscover(t *testing.T) {
 	if strings.Contains(res.Content, ":22") {
 		t.Errorf("sshd port leaked into result:\n%s", res.Content)
 	}
+	// ss 与 pgrep 都报 6380：去重后应只输出一行
+	if n := strings.Count(res.Content, ":6380"); n != 1 {
+		t.Errorf("端口 6380 应去重为一行，实际出现 %d 次:\n%s", n, res.Content)
+	}
+}
+
+func TestRedisDiscoverUnreachable(t *testing.T) {
+	exec := &fakeExec{argvFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "pgrep":
+			return []byte("1234 /usr/bin/redis-server *:6379\n"), nil
+		case "ss":
+			return []byte("State Recv-Q\n"), nil
+		case "redis-cli":
+			// connection refused：输出为空 + 非零退出
+			return nil, fmt.Errorf("exit status 1")
+		}
+		return nil, fmt.Errorf("unexpected %s", name)
+	}}
+	res, _ := NewRedisPlugin().Execute(context.Background(), "redis_discover", nil, exec)
+	if res.IsError {
+		t.Fatalf("unreachable instance should not be a tool error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, ":6379") || !strings.Contains(res.Content, "[无响应]") {
+		t.Errorf("dead port not marked 无响应:\n%s", res.Content)
+	}
+}
+
+func TestRedisDiscoverProcessOnly(t *testing.T) {
+	exec := &fakeExec{argvFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "pgrep":
+			return []byte("1600 /usr/bin/redis-server /etc/redis/redis.conf\n"), nil
+		case "ss":
+			// 只有 sshd 监听，无任何 redis 端口
+			return []byte("LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=1,fd=3))\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected %s", name)
+	}}
+	res, _ := NewRedisPlugin().Execute(context.Background(), "redis_discover", nil, exec)
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "未解析到监听端口") {
+		t.Errorf("missing 未解析到监听端口:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "/etc/redis/redis.conf") {
+		t.Errorf("missing process line:\n%s", res.Content)
+	}
 }
 
 func TestRedisDiscoverNoauthMarked(t *testing.T) {
@@ -226,5 +278,183 @@ func TestPortFromCmdline(t *testing.T) {
 		if !ok || got != want {
 			t.Errorf("portFromCmdline(%q) = %d/%v, want %d", line, got, ok, want)
 		}
+	}
+}
+
+func rdbExec(t *testing.T, statOut string, fetched *string) *fakeExec {
+	t.Helper()
+	return &fakeExec{
+		argvFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			switch name {
+			case "redis-cli":
+				joined := strings.Join(args, " ")
+				switch {
+				case strings.HasSuffix(joined, "CONFIG GET dir"):
+					return []byte("dir\n/var/lib/redis\n"), nil
+				case strings.HasSuffix(joined, "CONFIG GET dbfilename"):
+					return []byte("dbfilename\ndump.rdb\n"), nil
+				}
+				return nil, fmt.Errorf("unexpected redis-cli %v", args)
+			case "stat":
+				if args[len(args)-1] == "/var/lib/redis/dump.rdb" {
+					return []byte(statOut), nil
+				}
+				return nil, fmt.Errorf("unexpected stat %v", args)
+			}
+			return nil, fmt.Errorf("unexpected cmd %s %v", name, args)
+		},
+		fetchFn: func(_ context.Context, remotePath, localPath string) error {
+			if remotePath != "/var/lib/redis/dump.rdb" {
+				return fmt.Errorf("unexpected remote path %s", remotePath)
+			}
+			if fetched != nil {
+				*fetched = localPath
+			}
+			return os.WriteFile(localPath, []byte("fake-rdb-bytes"), 0o644)
+		},
+	}
+}
+
+func stubAnalyze(path string, topN int) (*rdbparser.Report, error) {
+	return &rdbparser.Report{
+		RDBVersion: 11, RedisVersion: "7.2.4",
+		TotalKeys: 6, EstBytes: 851000000,
+		DBs:   map[int]rdbparser.DBStat{0: {Keys: 6, EstBytes: 851000000}},
+		Types: map[string]int64{"string": 2, "hash": 1, "list": 1, "sortedset": 1, "set": 1},
+		NoTTL: 5, HasTTL: 1,
+		PrefixesByBytes: []rdbparser.PrefixStat{{Prefix: "session:user", Keys: 2, EstBytes: 432}},
+		PrefixesByKeys:  []rdbparser.PrefixStat{{Prefix: "session:user", Keys: 2, EstBytes: 432}},
+		BigKeys:         []rdbparser.KeyStat{{Key: "user:rank", Type: "zset", EstBytes: 860}},
+	}, nil
+}
+
+func TestRedisRdbAutoDetectPath(t *testing.T) {
+	var tmp string
+	rp := &RedisPlugin{analyze: stubAnalyze}
+	res, err := rp.Execute(context.Background(), "redis_rdb",
+		json.RawMessage(`{"port":6379}`), rdbExec(t, "119537664 1761763200\n", &tmp))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	for _, want := range []string{
+		"=== rdb: /var/lib/redis/dump.rdb",
+		"总键数 6",
+		"session:user",
+		"永久键(无TTL): 83%",
+	} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("missing %q in:\n%s", want, res.Content)
+		}
+	}
+	// 临时文件必须已清理（defer os.Remove）
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Errorf("temp file %s not cleaned up (err=%v)", tmp, err)
+	}
+}
+
+func TestRedisRdbExplicitPath(t *testing.T) {
+	var analyzed string
+	rp := &RedisPlugin{analyze: func(path string, topN int) (*rdbparser.Report, error) {
+		analyzed = path
+		if _, err := os.Stat(path); err != nil {
+			return nil, fmt.Errorf("analyze path %s not fetched: %v", path, err)
+		}
+		return &rdbparser.Report{TotalKeys: 0}, nil
+	}}
+	var fetchedRemote string
+	exec := &fakeExec{
+		argvFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "stat" {
+				return []byte("10 0\n"), nil
+			}
+			return nil, fmt.Errorf("unexpected %s %v（显式 path 时不应调用 redis-cli）", name, args)
+		},
+		fetchFn: func(_ context.Context, remotePath, localPath string) error {
+			fetchedRemote = remotePath
+			return os.WriteFile(localPath, []byte("x"), 0o644)
+		},
+	}
+	res, _ := rp.Execute(context.Background(), "redis_rdb",
+		json.RawMessage(`{"path":"/data/dump.rdb"}`), exec)
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Content)
+	}
+	if fetchedRemote != "/data/dump.rdb" {
+		t.Errorf("fetched %q, want /data/dump.rdb", fetchedRemote)
+	}
+	if analyzed == "" {
+		t.Error("analyze not called")
+	}
+}
+
+func TestRedisRdbSizeGuard(t *testing.T) {
+	rp := &RedisPlugin{analyze: stubAnalyze}
+	var fetched bool
+	exec := &fakeExec{
+		argvFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "stat" {
+				return []byte(fmt.Sprintf("%d 0\n", 2<<30)), nil // 2GB
+			}
+			return nil, fmt.Errorf("unexpected %s %v", name, args)
+		},
+		fetchFn: func(_ context.Context, remotePath, localPath string) error {
+			fetched = true
+			return nil
+		},
+	}
+	res, _ := rp.Execute(context.Background(), "redis_rdb",
+		json.RawMessage(`{"path":"/data/dump.rdb"}`), exec)
+	if !res.IsError {
+		t.Fatal("oversized rdb should error")
+	}
+	if fetched {
+		t.Error("must not fetch when over limit")
+	}
+	if !strings.Contains(res.Content, "force") {
+		t.Errorf("error should mention force: %q", res.Content)
+	}
+}
+
+func TestRedisRdbForceOverridesGuard(t *testing.T) {
+	rp := &RedisPlugin{analyze: stubAnalyze}
+	exec := &fakeExec{
+		argvFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "stat" {
+				return []byte(fmt.Sprintf("%d 0\n", 2<<30)), nil
+			}
+			return nil, fmt.Errorf("unexpected %s %v", name, args)
+		},
+		fetchFn: func(_ context.Context, remotePath, localPath string) error {
+			return os.WriteFile(localPath, []byte("x"), 0o644)
+		},
+	}
+	res, _ := rp.Execute(context.Background(), "redis_rdb",
+		json.RawMessage(`{"path":"/data/dump.rdb","force":true}`), exec)
+	if res.IsError {
+		t.Fatalf("force should allow: %s", res.Content)
+	}
+}
+
+func TestRedisRdbDetectFailsSuggestsPath(t *testing.T) {
+	rp := &RedisPlugin{analyze: stubAnalyze}
+	exec := &fakeExec{
+		argvFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "redis-cli" {
+				return []byte("Could not connect to Redis at 127.0.0.1:6379: Connection refused"),
+					fmt.Errorf("exit status 1")
+			}
+			return nil, fmt.Errorf("unexpected %s %v", name, args)
+		},
+	}
+	res, _ := rp.Execute(context.Background(), "redis_rdb",
+		json.RawMessage(`{}`), exec)
+	if !res.IsError {
+		t.Fatal("dead instance without path should error")
+	}
+	if !strings.Contains(res.Content, "path") {
+		t.Errorf("error should suggest explicit path: %q", res.Content)
 	}
 }

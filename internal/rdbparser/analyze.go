@@ -29,6 +29,7 @@ func Analyze(path string, topN int) (*Report, error) {
 				dec.Fail(fmt.Errorf("rdb parse panic: %v", p))
 			}
 		}()
+		// 1MB 外层缓冲降低读 syscall 频率；rdb.Decode 内部还会再包 4KB bufio（双重缓冲，取舍后可接受）
 		if err := rdb.Decode(bufio.NewReaderSize(f, 1<<20), dec); err != nil {
 			dec.Fail(fmt.Errorf("rdb decode: %w", err))
 		}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 
@@ -161,7 +163,8 @@ func describeRedisPort(ctx context.Context, exec executor.Executor, port int, b 
 	case pingErr != nil && strings.TrimSpace(ping) == "":
 		fmt.Fprintf(b, ":%d  [无响应] %v\n", port, pingErr)
 	default:
-		fmt.Fprintf(b, ":%d  [非预期响应] %s", port, ping)
+		// 补尾换行 + TrimSpace：防多行/无换行的 ping 输出把两端口挤进一行
+		fmt.Fprintf(b, ":%d  [非预期响应] %s\n", port, strings.TrimSpace(ping))
 	}
 }
 
@@ -211,7 +214,11 @@ func portFromCmdline(line string) (int, bool) {
 			}
 		}
 		if strings.Contains(f, ":") {
-			tail := f[strings.LastIndex(f, ":")+1:]
+			i := strings.LastIndex(f, ":")
+			if i > 0 && f[i-1] == ':' { // IPv6 字面量（::1 / ::），跳过
+				continue
+			}
+			tail := f[i+1:]
 			if p, err := strconv.Atoi(tail); err == nil && p > 0 && !strings.Contains(tail, "/") {
 				return p, true
 			}
@@ -252,7 +259,128 @@ func redisInfoField(info, field string) string {
 	return ""
 }
 
-// redisRdb 在 Task 9 实现，先桩。
+// rdbFetchLimit 是 RDB 拉取的默认上限（1GB），防 SFTP 拉爆带宽与本地磁盘。
+const rdbFetchLimit = 1 << 30
+
+type redisRdbInput struct {
+	Path     string `json:"path"`
+	Port     int    `json:"port"`
+	Password string `json:"password"`
+	TopN     int    `json:"top_n"`
+	Force    bool   `json:"force"`
+}
+
 func (rp *RedisPlugin) redisRdb(ctx context.Context, input json.RawMessage, exec executor.Executor) (ToolResult, error) {
-	return ToolResult{}, fmt.Errorf("redis_rdb: not implemented yet")
+	var p redisRdbInput
+	if err := json.Unmarshal(input, &p); err != nil {
+		return ToolResult{}, fmt.Errorf("parse input: %w", err)
+	}
+	if p.Port == 0 {
+		p.Port = 6379
+	}
+	if p.TopN == 0 {
+		p.TopN = 10
+	}
+
+	rdbPath := p.Path
+	if rdbPath == "" {
+		var err error
+		rdbPath, err = rp.detectRdbPath(ctx, exec, p.Port, p.Password)
+		if err != nil {
+			return ToolResult{
+				Content: fmt.Sprintf("Error: %v\n（实例不在 %d 端口或不存活时，请显式传 path 参数）", err, p.Port),
+				IsError: true,
+			}, nil
+		}
+	}
+
+	size, mtime, err := statRemoteFile(ctx, exec, rdbPath)
+	if err != nil {
+		return ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
+	}
+	if size > rdbFetchLimit && !p.Force {
+		return ToolResult{
+			Content: fmt.Sprintf("Error: %s 大小 %s 超过 1GB 拉取上限；确认需要分析请加 force:true",
+				rdbPath, rdbparser.HumanBytes(uint64(size))),
+			IsError: true,
+		}, nil
+	}
+
+	tmp, err := os.CreateTemp("", "gengar-rdb-*.rdb")
+	if err != nil {
+		return ToolResult{Content: fmt.Sprintf("Error: create temp: %v", err), IsError: true}, nil
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath) // RDB 含真实键值数据，成败都清理
+
+	if err := exec.FetchFile(ctx, rdbPath, tmpPath); err != nil {
+		return ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
+	}
+
+	report, err := rp.analyze(tmpPath, p.TopN)
+	if err != nil {
+		return ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
+	}
+	return ToolResult{Content: rdbparser.Render(rdbPath, size, mtime, report)}, nil
+}
+
+// detectRdbPath 从存活实例的 CONFIG GET dir + dbfilename 拼出 RDB 路径。
+func (rp *RedisPlugin) detectRdbPath(ctx context.Context, exec executor.Executor, port int, password string) (string, error) {
+	run := func(args ...string) (string, error) {
+		argv := redisArgv(port, password, args...)
+		out, err := exec.RunArgv(ctx, argv[0], argv[1:]...)
+		return string(out), err
+	}
+	dirOut, err := run("CONFIG", "GET", "dir")
+	if err != nil {
+		return "", fmt.Errorf("CONFIG GET dir: %v\n%s", err, dirOut)
+	}
+	fileOut, err := run("CONFIG", "GET", "dbfilename")
+	if err != nil {
+		return "", fmt.Errorf("CONFIG GET dbfilename: %v\n%s", err, fileOut)
+	}
+	dir := configGetValue(dirOut, "dir")
+	name := configGetValue(fileOut, "dbfilename")
+	if dir == "" || name == "" {
+		return "", fmt.Errorf("CONFIG GET 返回无法解析:\n%s%s", dirOut, fileOut)
+	}
+	// 远端是 Linux：path.Join 而非 filepath（Windows 开发机会引入反斜杠）
+	return path.Join(dir, name), nil
+}
+
+// configGetValue 解析 redis-cli CONFIG GET 输出中的值。
+// 输出形如 "key\nvalue\n"，但 -a 密码警告可能混进输出，故按键名定位。
+func configGetValue(out, key string) string {
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) == key && i+1 < len(lines) {
+			return strings.TrimSpace(lines[i+1])
+		}
+	}
+	// 兜底：最后一行非空内容
+	for i := len(lines) - 1; i >= 0; i-- {
+		if s := strings.TrimSpace(lines[i]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// statRemoteFile 取远端文件大小与 mtime（unix 秒）。
+func statRemoteFile(ctx context.Context, exec executor.Executor, p string) (int64, int64, error) {
+	out, err := exec.RunArgv(ctx, "stat", "-c", "%s %Y", p)
+	if err != nil {
+		return 0, 0, fmt.Errorf("stat %s: %v\n%s", p, err, out)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 {
+		return 0, 0, fmt.Errorf("stat 输出无法解析: %q", string(out))
+	}
+	size, err1 := strconv.ParseInt(fields[0], 10, 64)
+	mtime, err2 := strconv.ParseInt(fields[1], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, fmt.Errorf("stat 输出无法解析: %q", string(out))
+	}
+	return size, mtime, nil
 }
