@@ -35,6 +35,12 @@ type Entry struct {
 }
 
 // Decoder 实现 rdb.Decoder 回调（nopdecoder 兜底未覆盖项）。
+//
+// 注意（防误用）：
+//   - 一个实例只能驱动一次 rdb.Decode：Entries 关闭后再走回调会向已关闭
+//     通道发送而 panic
+//   - 消费端必须排空 Entries：提前退出会让生产 goroutine 永久阻塞在
+//     通道发送上
 type Decoder struct {
 	Entries chan *Entry
 	m       MemProfiler

@@ -3,7 +3,7 @@
 本包实现 RDB 内存分析（rdr 风格），全部源码本地内置，不引入 go.mod 外部依赖。
 
 - `rdb/`：解析器，vendored 自 github.com/dongmx/rdb @ e1191ecb6823（2020-07-14，
-  LICENCE 随目录保留，仅 import 路径重写）。上游 hdp/rdb 2018 年后未再大动，
+  LICENCE 随目录保留，仅 import 路径重写）。上游 tent/rdb 2018 年后未再大动，
   此 fork 是长期稳定的快照。
 - `memprofiler.go` 与 `decoder.go`：移植自 github.com/xueqiu/rdr master
   （Apache-2.0，LICENSE 见本目录）；decoder.go 相对母本的适配点见其文件头注释
