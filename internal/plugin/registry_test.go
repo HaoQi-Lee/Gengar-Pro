@@ -169,7 +169,7 @@ func (h hostExec) RunArgv(_ context.Context, name string, _ ...string) ([]byte, 
 	return []byte(h.name), nil
 }
 func (h hostExec) WriteFile(_ context.Context, _ string, _ []byte) error { return nil }
-func (h hostExec) FetchFile(_ context.Context, _, _ string) error    { return nil }
+func (h hostExec) FetchFile(_ context.Context, _, _ string) error        { return nil }
 
 type failExec struct{}
 
@@ -182,7 +182,9 @@ func (failExec) RunArgv(_ context.Context, name string, _ ...string) ([]byte, er
 func (failExec) WriteFile(_ context.Context, _ string, _ []byte) error {
 	return errors.New("connection refused")
 }
-func (failExec) FetchFile(_ context.Context, _, _ string) error { return errors.New("connection refused") }
+func (failExec) FetchFile(_ context.Context, _, _ string) error {
+	return errors.New("connection refused")
+}
 
 // countingExec 包装 hostExec 计数调用，用于断言「不该执行就没执行」
 // （本路径 0 目标 0 goroutine，非并发，普通计数即可）。

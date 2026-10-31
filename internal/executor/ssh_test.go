@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -136,6 +137,46 @@ func TestSSHWriteFile(t *testing.T) {
 	}
 	if fi.Mode().Perm() != 0o644 {
 		t.Fatalf("perm = %o, want 644", fi.Mode().Perm())
+	}
+}
+
+func TestSSHFetchFile(t *testing.T) {
+	ex, _ := newSSHExecutor(t)
+	// 相对路径落在测试进程 CWD（假服务器的 SFTP 服务于本机文件系统）
+	name := "sftp-fetch-test-" + time.Now().Format("150405.000000000") + ".txt"
+	defer os.Remove(name)
+	content := []byte("REDIS0012-sftp-fixture")
+	if err := ex.WriteFile(context.Background(), name, content); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "fetched.txt")
+	if err := ex.FetchFile(context.Background(), name, dst); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("fetched content %q err=%v, want %q", got, err, content)
+	}
+}
+
+func TestSSHFetchFileCancelInterrupts(t *testing.T) {
+	// SFTP 读挂在网络上，fixture 无法像 __block__ 那样挂起远端读——
+	// 改用预取消的 ctx + 大文件：看门狗（ctx.Done → 关 SFTP client）
+	// 与首个请求并发触发，传输必被中断，不得傻等或成功返回。
+	ex, _ := newSSHExecutor(t)
+	src := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(src, bytes.Repeat([]byte{0xA5}, 64<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 进入前已取消：看门狗立刻关 client
+	start := time.Now()
+	err := ex.FetchFile(ctx, src, filepath.Join(t.TempDir(), "out.bin"))
+	if err == nil {
+		t.Fatal("expected error when ctx already cancelled")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("interrupt took %v, want < 3s", elapsed)
 	}
 }
 

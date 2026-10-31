@@ -26,6 +26,8 @@ type Executor interface {
 	WriteFile(ctx context.Context, path string, content []byte) error
 	// FetchFile 流式取回目标机文件到本地路径（大文件不整读进内存）。
 	// Local 实现为本地复制；SSH 实现走 SFTP 逐块拷贝。
+	// 失败或 ctx 取消时 localPath 可能残留部分写入，清理由调用方负责
+	// （写临时文件 + defer os.Remove）；Local 实现不响应 ctx 取消。
 	FetchFile(ctx context.Context, remotePath, localPath string) error
 }
 
