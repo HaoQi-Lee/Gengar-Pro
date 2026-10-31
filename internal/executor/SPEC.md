@@ -12,16 +12,16 @@ package: internal/executor
 
 ## 文件
 
-- `executor.go` — `Executor` 接口与 `Local` 实现（bash -c / argv exec / os.WriteFile），含兜底超时逻辑
-- `ssh.go` — `DialClient` 拨号（密码/密钥认证、全握手 deadline；executor 与 term 共用的唯一拨号入口）、`DialHost` 与 `SSH` 执行器（session 执行 + SFTP 写文件 + POSIX 单引号 argv 引用）
+- `executor.go` — `Executor` 接口与 `Local` 实现（bash -c / argv exec / os.WriteFile / 流式 FetchFile），含兜底超时逻辑
+- `ssh.go` — `DialClient` 拨号（密码/密钥认证、全握手 deadline；executor 与 term 共用的唯一拨号入口）、`DialHost` 与 `SSH` 执行器（session 执行 + SFTP 读写文件 + POSIX 单引号 argv 引用）
 - `knownhosts.go` — TOFU 主机密钥策略（首连记录指纹、已记录则严格校验）、`ErrHostKeyMismatch` 哨兵、`SetKnownHostsPath` 重定向
 - `manager.go` — `Manager`：按 host.ID 缓存 SSH 连接，探活看门狗 + 死连接重拨
-- `local_test.go` / `ssh_test.go` / `manager_test.go` — 单元测试
+- `local_test.go` / `ssh_test.go` / `manager_test.go` / `fetchfile_local_test.go` — 单元测试
 - `testserver_test.go` — 进程内 SSH 假服务器（密码认证 + exec 回显 + SFTP 子系统），SSH 单测无需 Docker
 
 ## API
 
-- `type Executor interface` — 一次目标绑定的执行器：`RunShell(ctx, cmd)`（目标机 shell 语义）、`RunArgv(ctx, name, args...)`（argv 语义，参数不经 shell 重新解释）、`WriteFile(ctx, path, content)`（写文件 0644，父目录由调用方保证）
+- `type Executor interface` — 一次目标绑定的执行器：`RunShell(ctx, cmd)`（目标机 shell 语义）、`RunArgv(ctx, name, args...)`（argv 语义，参数不经 shell 重新解释）、`WriteFile(ctx, path, content)`（写文件 0644，父目录由调用方保证）、`FetchFile(ctx, remotePath, localPath)`（流式取回目标机文件到本地路径，大文件不整读进内存）。FetchFile 失败或 ctx 取消时可能残留部分写入的 localPath，清理由调用方负责（临时文件 + defer os.Remove；Local 实现不响应 ctx 取消）
 - `NewLocal(timeout time.Duration) *Local` — 创建本机执行器；timeout 在调用方 ctx 无 deadline 时兜底，零值不设兜底
 - `type Local struct` — 本机实现（RunShell 依赖 bash 在 PATH 中；Windows 上 .bat/.cmd 经 cmd.exe 解析为标准库行为）
 - `DialClient(h *host.Host, secrets host.SecretStore, timeout time.Duration) (*ssh.Client, error)` — 按 AuthConfig 建立一条 SSH 连接。拨号认证的唯一入口：executor（RunShell/SFTP）与 term（交互 PTY 会话）共用，认证/TOFU 行为一处维护
@@ -61,6 +61,10 @@ package: internal/executor
 ### 探活看门狗防黑洞
 
 探活（openssh keepalive 往返）全程持有 Manager 互斥锁，连接黑洞化（TCP 未断但对端永不回复）时 `SendRequest` 会阻塞到 OS 层 keepalive 超时，不设期限一台主机就冻结所有主机的 ExecutorFor。看门狗期限取 `min(timeout, 5s)`：健康网络一次往返毫秒级，又远小于 TCP 栈默认黑洞检测期。被判死的连接由随后的 close 解除被放弃 goroutine 的阻塞。
+
+### FetchFile 的清理契约
+
+SSH 实现与 WriteFile 同款看门狗（ctx 取消关 SFTP client 中断挂起的读），Local 实现为流式复制且不响应 ctx。两个实现都不清理失败/取消时的半截 localPath——接口注释明确清理由调用方负责，预期调用方（如 redis_rdb 插件）用 `os.CreateTemp` + `defer os.Remove` 承接。
 
 ### 输出语义兼容
 

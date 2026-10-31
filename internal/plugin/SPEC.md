@@ -8,7 +8,7 @@ package: internal/plugin
 
 ## 概述
 
-`internal/plugin` 是 Gengar 项目的**工具插件体系**核心包。它定义统一的 `Plugin` 接口（`Execute` 收到注入的单目标 `executor.Executor`）并实现十大功能域插件：Shell 命令执行、文件操作、Docker 管理、systemd 服务管理、系统诊断、软件包管理、网络诊断、环境共识查询、按主机的持久化记忆以及用户意图澄清。`Registry` 注册中心聚合全部插件，对目标型工具（`Targeting=true`，输入带 `hosts` 参数）经 `TargetResolver` 解析引用并按主机 fan-out、聚合为单一结果；控制面工具直发。每个工具声明自身的风险等级，供上层安全审批机制使用。
+`internal/plugin` 是 Gengar 项目的**工具插件体系**核心包。它定义统一的 `Plugin` 接口（`Execute` 收到注入的单目标 `executor.Executor`）并实现十一大功能域插件：Shell 命令执行、文件操作、Docker 管理、systemd 服务管理、系统诊断、软件包管理、网络诊断、Redis 中间件运维、环境共识查询、按主机的持久化记忆以及用户意图澄清。`Registry` 注册中心聚合全部插件，对目标型工具（`Targeting=true`，输入带 `hosts` 参数）经 `TargetResolver` 解析引用并按主机 fan-out、聚合为单一结果；控制面工具直发。每个工具声明自身的风险等级，供上层安全审批机制使用。
 
 ## 文件
 
@@ -23,6 +23,7 @@ package: internal/plugin
 - `systemd.go` / `systemd_test.go` — SystemdManager 插件，提供 systemctl 和 journalctl 工具
 - `diagnostic.go` / `diagnostic_test.go` — DiagnosticKit 插件，提供端口/进程/磁盘/内存/网络/日志诊断工具以及 `system_info`
 - `network.go` / `network_test.go` — NetworkPlugin 插件，提供 `ping`、`dns_lookup`、`http_check` 工具
+- `redis.go` / `redis_test.go` — RedisPlugin 插件，提供 `redis_discover`（实例发现）、`redis_cli`（命令透传，Risky）、`redis_rdb`（RDB 离线分析）工具
 - `pkgmgr.go` / `pkgmgr_test.go` — PackageManager 插件，提供包安装/卸载/搜索/列表工具，自动检测 apt/yum/dnf
 - `knowledge.go` / `knowledge_test.go` — KnowledgeBase 插件，提供 `query_consensus` 工具（控制面）
 - `memory.go` / `memory_test.go` — MemoryManager 插件，提供按主机分域的 `memory_read/write/delete` 工具（控制面，输入带 `host` 参数而非 `hosts`）
@@ -59,13 +60,14 @@ package: internal/plugin
 - `NewDiagnosticKit()` — 诊断工具集
 - `NewPackageManager()` — 包管理器（自动检测 apt/yum/dnf）
 - `NewNetworkPlugin()` — 网络诊断插件
+- `NewRedisPlugin()` — Redis 中间件运维插件（discover/cli/rdb 三工具）
 - `NewKnowledgeBase(consensus)` — 共识知识库
 - `NewMemoryManager(store *memory.Store)` — 持久化内存管理器
 - `NewClarifyPlugin()` — 用户澄清插件
 
 ## 依赖
 
-**内部包：** `gengar-pro/internal/executor`（执行接缝）、`gengar-pro/internal/safety`（风险等级）、`gengar-pro/internal/consensus`（共识查询）、`gengar-pro/internal/memory`（按主机持久化存储）
+**内部包：** `gengar-pro/internal/executor`（执行接缝）、`gengar-pro/internal/safety`（风险等级）、`gengar-pro/internal/consensus`（共识查询）、`gengar-pro/internal/memory`（按主机持久化存储）、`gengar-pro/internal/rdbparser`（RDB 离线解析与报告，redis_rdb 工具消费）
 
 **标准库：** `encoding/json`、`fmt`、`context`、`strings`、`sync`、`unicode/utf8` 等
 
@@ -92,6 +94,10 @@ package: internal/plugin
 ### 执行形式（RunArgv vs RunShell）
 
 模型可控字段（容器名、服务名、包名、查询串、路径）一律 argv 形式执行——参数不经 shell 重新解释，`nginx; reboot` 只会得到 cli 参数错误（FileManager/DiagnosticKit/NetworkPlugin 原生示范，DockerManager/SystemdManager/PackageManager 已于 2026-10 评审 ①-4 对齐）。`docker_exec` 的 command 保留 shell 语义（本就 Risky=1 需确认），container 名仍 argv 化。compose 用 `-f path` 免 `cd`。`lines` 负数 clamp 到默认。 PackageManager 的探测（cat /etc/os-release、command -v）命令固定无注入面，仍走 RunShell。
+
+### Redis 插件的三工具面
+
+`redis_discover`/`redis_rdb` 为 Safe（只读探测/离线分析），`redis_cli` 为 Risky——静态分级意味着每次调用（含只读 GET）都过确认门，同一轮多条调用共享 Agent 循环的一次批量确认；工具描述如实说明该行为。密码经 `-a` 参数传递且会出现在对话与审计中（本期明确接受的设计决策，见 `.psy/2026-10-31/` 设计文档），不加 `--no-auth-warning`（redis-cli 3.x/5.x 不识别该 flag）。`redis_rdb` 走 `executor.FetchFile` 把 dump.rdb 拉到本地临时文件（`defer os.Remove` 清理），路径自动探测用 `CONFIG GET dir+dbfilename`（`path.Join`，远端 Linux 语义），>1GB 需 `force:true`。
 
 ### 澄清插件的特殊处理
 

@@ -32,7 +32,7 @@ package: internal/appcore
 - `(c *Core) Resolve(refs []string) (targets []plugin.Target, unresolved []string, err error)` — 展开引用并绑定执行器（复用/建立 SSH 连接）
 - `(c *Core) CatalogText() string` — 生成注入系统提示词的主机清单目录（含 📌 默认目标标记与目标引用规则，确定性输出）
 - `LoadConfig(store *host.Store, secrets host.SecretStore) *config.Config` — 配置优先级链：api_key 走密文通道（env > secrets（AES-GCM，设置页保存）> 旧 settings 明文（读出即迁入 secrets 并清明文，幂等）> 引导）；base_url/model 为 SQLite settings > 环境变量 > 引导 > 默认
-- `(c *Core) BuildAgent(cfg *config.Config, sink ui.Sink, csns *consensus.Consensus, auditLog agent.AuditLogger, sessionID string, extra ...agent.Option) (*agent.Agent, error)` — 组装完整 Agent：claude 客户端、安全门、全部 10 个插件、记忆、resolver、catalog/audit/session 选项；auditLog 接口化（webapi 传按用户盖 User 戳的包装器，禁用审计须传字面 nil——见 agent.AuditLogger 契约），归调用方所有，Core.Close 不关它
+- `(c *Core) BuildAgent(cfg *config.Config, sink ui.Sink, csns *consensus.Consensus, auditLog agent.AuditLogger, sessionID string, extra ...agent.Option) (*agent.Agent, error)` — 组装完整 Agent：claude 客户端、安全门、全部 11 个插件、记忆、resolver、catalog/audit/session 选项；auditLog 接口化（webapi 传按用户盖 User 戳的包装器，禁用审计须传字面 nil——见 agent.AuditLogger 契约），归调用方所有，Core.Close 不关它
 - `(c *Core) NewSession() *Session` — 创建全局视图会话（清单不按属主过滤；headless 单用户语义）
 - `(c *Core) NewSessionFor(owner string, isAdmin bool) *Session` — 创建用户视角会话：普通用户只解析自己名下主机（Agent 目标解析/目录隔离），admin 解析全表；视角在创建时快照（角色不可变前提）
 - `type Session struct` — 每登录用户一个：钉住集合与 Agent 会话按用户隔离，清单按 Session 视角（global / owner+isAdmin）过滤；连接/设置全局共享
