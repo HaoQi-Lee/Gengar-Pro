@@ -5,6 +5,8 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -22,6 +24,9 @@ type Executor interface {
 	RunArgv(ctx context.Context, name string, args ...string) ([]byte, error)
 	// WriteFile 写文件（0644）。父目录由调用方（FileManager）保证存在。
 	WriteFile(ctx context.Context, path string, content []byte) error
+	// FetchFile 流式取回目标机文件到本地路径（大文件不整读进内存）。
+	// Local 实现为本地复制；SSH 实现走 SFTP 逐块拷贝。
+	FetchFile(ctx context.Context, remotePath, localPath string) error
 }
 
 // Local 在本机执行。timeout 在调用方 ctx 无 deadline 时兜底；零值表示
@@ -53,6 +58,27 @@ func (l *Local) RunArgv(ctx context.Context, name string, args ...string) ([]byt
 
 func (l *Local) WriteFile(_ context.Context, path string, content []byte) error {
 	return os.WriteFile(path, content, 0644)
+}
+
+// FetchFile 本地实现即流式复制（io.Copy 逐块，不整读进内存）。
+func (l *Local) FetchFile(_ context.Context, remotePath, localPath string) error {
+	src, err := os.Open(remotePath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", remotePath, err)
+	}
+	defer src.Close()
+	dst, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", localPath, err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("copy %s -> %s: %w", remotePath, localPath, err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", localPath, err)
+	}
+	return nil
 }
 
 func (l *Local) withTimeout(ctx context.Context) context.Context {

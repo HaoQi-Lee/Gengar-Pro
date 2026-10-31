@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -235,6 +236,44 @@ func (s *SSH) WriteFile(ctx context.Context, path string, content []byte) error 
 	}
 	if err := client.Chmod(path, 0o644); err != nil {
 		return fmt.Errorf("sftp chmod %s: %w", path, err)
+	}
+	return nil
+}
+
+// FetchFile 经 SFTP 流式取回远端文件到本地路径。与 WriteFile 同款看门狗：
+// ctx 取消时关闭 SFTP client 中断挂起的读；远端打开失败（权限/不存在）
+// 原样返回错误。
+func (s *SSH) FetchFile(ctx context.Context, remotePath, localPath string) error {
+	ctx = s.withTimeout(ctx)
+	client, err := sftp.NewClient(s.client)
+	if err != nil {
+		return fmt.Errorf("sftp client: %w", err)
+	}
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = client.Close()
+		case <-done:
+		}
+	}()
+	defer close(done) // 后注册先执行：先停看门狗，再走上面的 client.Close
+	rf, err := client.Open(remotePath)
+	if err != nil {
+		return fmt.Errorf("sftp open %s: %w", remotePath, err)
+	}
+	defer rf.Close()
+	lf, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", localPath, err)
+	}
+	if _, err := io.Copy(lf, rf); err != nil {
+		_ = lf.Close()
+		return fmt.Errorf("fetch %s -> %s: %w", remotePath, localPath, err)
+	}
+	if err := lf.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", localPath, err)
 	}
 	return nil
 }
