@@ -265,7 +265,9 @@ func TestPortFromCmdline(t *testing.T) {
 		"1234 /usr/bin/redis-server 127.0.0.1:6380":        6380,
 		"1300 /usr/bin/redis-server *:26379 [sentinel]":    26379,
 		"1500 /usr/bin/redis-server --port 6400":           6400,
-		"1600 /usr/bin/redis-server /etc/redis/redis.conf": 0, // 无端口信息
+		"1600 /usr/bin/redis-server /etc/redis/redis.conf": 0,    // 无端口信息
+		"1700 /usr/bin/redis-server ::1":                   0,    // IPv6 字面量，防御跳过
+		"1800 /usr/bin/redis-server [::]:6400":             6400, // 合法 IPv6 带端口形态仍解析
 	}
 	for line, want := range cases {
 		got, ok := portFromCmdline(line)
@@ -278,6 +280,18 @@ func TestPortFromCmdline(t *testing.T) {
 		if !ok || got != want {
 			t.Errorf("portFromCmdline(%q) = %d/%v, want %d", line, got, ok, want)
 		}
+	}
+}
+
+// TestConfigGetValueWarningMixed: -a 密码警告混进输出时按键名定位仍能取值；
+// 键名定位失败（如 NOAUTH 错误文本 exit-0 混入）必须返回空串而非兜底取
+// 最后一行——让 detectRdbPath 走「请显式传 path」降级，而非拼出垃圾路径。
+func TestConfigGetValueWarningMixed(t *testing.T) {
+	if got := configGetValue("Warning: Using a password with '-a'...\ndir\n/var/lib/redis\n", "dir"); got != "/var/lib/redis" {
+		t.Errorf("configGetValue(警告+dir) = %q, want /var/lib/redis", got)
+	}
+	if got := configGetValue("NOAUTH Authentication required.\n", "dir"); got != "" {
+		t.Errorf("configGetValue(NOAUTH) = %q, want 空串（键名定位失败不再兜底）", got)
 	}
 }
 
@@ -454,7 +468,7 @@ func TestRedisRdbDetectFailsSuggestsPath(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("dead instance without path should error")
 	}
-	if !strings.Contains(res.Content, "path") {
+	if !strings.Contains(res.Content, "path 参数") {
 		t.Errorf("error should suggest explicit path: %q", res.Content)
 	}
 }

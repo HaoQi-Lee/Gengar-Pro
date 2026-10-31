@@ -332,6 +332,7 @@ func (c *Core) buildAgent(resolver plugin.TargetResolver, catalog func() string,
 	reg.Register(plugin.NewPackageManager())
 	reg.Register(plugin.NewDiagnosticKit())
 	reg.Register(plugin.NewNetworkPlugin())
+	reg.Register(plugin.NewRedisPlugin())
 	reg.Register(plugin.NewKnowledgeBase(csns))
 	reg.Register(plugin.NewClarifyPlugin())
 	memStore, err := memory.OpenStoreDir(c.memDir)

@@ -82,6 +82,7 @@ func TestTargetingToolSchemasDeclareHosts(t *testing.T) {
 	reg.Register(NewPackageManager())
 	reg.Register(NewDiagnosticKit())
 	reg.Register(NewNetworkPlugin())
+	reg.Register(NewRedisPlugin())
 	// 控制面反向断言：这些工具必须不带 Targeting/hosts（nil 构造安全，
 	// Tools() 返回静态定义不解引用 nil 字段）。
 	reg.Register(NewMemoryManager(nil))
@@ -113,8 +114,8 @@ func TestTargetingToolSchemasDeclareHosts(t *testing.T) {
 			}
 		}
 	}
-	if targeting != 30 {
-		t.Fatalf("expected 30 targeting tools, got %d", targeting)
+	if targeting != 33 {
+		t.Fatalf("expected 33 targeting tools, got %d", targeting)
 	}
 }
 

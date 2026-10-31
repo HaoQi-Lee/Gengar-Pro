@@ -351,17 +351,14 @@ func (rp *RedisPlugin) detectRdbPath(ctx context.Context, exec executor.Executor
 
 // configGetValue 解析 redis-cli CONFIG GET 输出中的值。
 // 输出形如 "key\nvalue\n"，但 -a 密码警告可能混进输出，故按键名定位。
+// 键名定位失败返回空串（如 NOAUTH 文本混进输出时）——由 detectRdbPath
+// 走「CONFIG GET 返回无法解析」错误并提示显式传 path，好过拿错误文本
+// 拼出垃圾路径。
 func configGetValue(out, key string) string {
 	lines := strings.Split(out, "\n")
 	for i, l := range lines {
 		if strings.TrimSpace(l) == key && i+1 < len(lines) {
 			return strings.TrimSpace(lines[i+1])
-		}
-	}
-	// 兜底：最后一行非空内容
-	for i := len(lines) - 1; i >= 0; i-- {
-		if s := strings.TrimSpace(lines[i]); s != "" {
-			return s
 		}
 	}
 	return ""
