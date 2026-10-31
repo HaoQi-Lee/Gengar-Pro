@@ -63,15 +63,17 @@ func PrefixOf(key string) string {
 }
 
 // aggregator 消费 Entry 流累计统计。纯内存，无 IO。
+// finish 后实例冻结：再调用 add/finish 会 panic（防止报告冻结后又混入数据）。
 type aggregator struct {
 	rep    Report
 	prefix map[string]*PrefixStat
 	big    []KeyStat
 	topN   int
+	done   bool
 }
 
 func newAggregator(topN int) *aggregator {
-	if topN <= 0 {
+	if topN <= 0 { // 非法值收敛为默认 10
 		topN = 10
 	}
 	return &aggregator{
@@ -82,7 +84,11 @@ func newAggregator(topN int) *aggregator {
 }
 
 // add 累计一条 Entry。Expiry 单位是毫秒，聚合只判 ==0（永久键），不换算。
+// finish 后调用会 panic。
 func (a *aggregator) add(e *Entry) {
+	if a.done {
+		panic("aggregator: use after finish")
+	}
 	a.rep.TotalKeys++
 	a.rep.EstBytes += e.Bytes
 
@@ -114,7 +120,11 @@ func (a *aggregator) add(e *Entry) {
 }
 
 // finish 排序截断并冻结报告。dec 可为 nil（测试用；元数据留零值）。
+// 重复调用或冻结后再 add 会 panic。
 func (a *aggregator) finish(dec *Decoder) *Report {
+	if a.done {
+		panic("aggregator: use after finish")
+	}
 	if dec != nil {
 		a.rep.RDBVersion = dec.RDBVersion()
 		a.rep.RedisVersion = dec.RedisVersion()
@@ -161,5 +171,6 @@ func (a *aggregator) finish(dec *Decoder) *Report {
 		a.big = a.big[:a.topN]
 	}
 	a.rep.BigKeys = a.big
+	a.done = true
 	return &a.rep
 }

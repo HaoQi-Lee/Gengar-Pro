@@ -1,6 +1,9 @@
 package rdbparser
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestPrefixOf(t *testing.T) {
 	cases := map[string]string{
@@ -105,4 +108,66 @@ func TestAggregatorMetadataFromDecoder(t *testing.T) {
 	if r.RDBVersion != 11 || r.RedisVersion != "7.2.4" || r.DumpCtime != 1700000000 || r.UsedMemSnapshot != 4096 {
 		t.Errorf("metadata = %+v", r)
 	}
+}
+
+func TestAggregatorEmpty(t *testing.T) {
+	r := newAggregator(10).finish(nil)
+	if r.TotalKeys != 0 {
+		t.Errorf("TotalKeys = %d, want 0", r.TotalKeys)
+	}
+	if len(r.BigKeys) != 0 {
+		t.Errorf("BigKeys = %+v, want empty", r.BigKeys)
+	}
+	if len(r.PrefixesByBytes) != 0 || len(r.PrefixesByKeys) != 0 {
+		t.Errorf("Prefixes = %v / %v, want empty", r.PrefixesByBytes, r.PrefixesByKeys)
+	}
+	if len(r.DBs) != 0 || len(r.Types) != 0 {
+		t.Errorf("DBs/Types = %v / %v, want empty", r.DBs, r.Types)
+	}
+}
+
+func TestAggregatorTiebreak(t *testing.T) {
+	a := newAggregator(10)
+	a.add(&Entry{Key: "aa:1:x", Bytes: 100, Type: "string"})
+	a.add(&Entry{Key: "bb:1:x", Bytes: 100, Type: "string"})
+	r := a.finish(nil)
+	if len(r.PrefixesByBytes) != 2 {
+		t.Fatalf("len(PrefixesByBytes) = %d, want 2", len(r.PrefixesByBytes))
+	}
+	if r.PrefixesByBytes[0].Prefix != "aa:1" {
+		t.Errorf("PrefixesByBytes[0].Prefix = %q, want %q（字典序小者）",
+			r.PrefixesByBytes[0].Prefix, "aa:1")
+	}
+	if r.PrefixesByKeys[0].Prefix != "aa:1" {
+		t.Errorf("PrefixesByKeys[0].Prefix = %q, want %q", r.PrefixesByKeys[0].Prefix, "aa:1")
+	}
+}
+
+func TestAggregatorDefaultTopN(t *testing.T) {
+	a := newAggregator(0) // topN<=0 收敛为默认 10
+	for i := 0; i < 12; i++ {
+		a.add(&Entry{Key: fmt.Sprintf("p%02d:row:1", i), Bytes: uint64(i), Type: "string"})
+	}
+	r := a.finish(nil)
+	if len(r.PrefixesByBytes) != 10 || len(r.PrefixesByKeys) != 10 || len(r.BigKeys) != 10 {
+		t.Errorf("lens = %d/%d/%d, want 10/10/10",
+			len(r.PrefixesByBytes), len(r.PrefixesByKeys), len(r.BigKeys))
+	}
+}
+
+func TestAggregatorFreeze(t *testing.T) {
+	a := newAggregator(10)
+	a.add(&Entry{Key: "x", Bytes: 1, Type: "string"})
+	a.finish(nil)
+
+	mustPanic := func(name string, f func()) {
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s 应在 finish 后 panic", name)
+			}
+		}()
+		f()
+	}
+	mustPanic("add", func() { a.add(&Entry{Key: "y", Bytes: 1, Type: "string"}) })
+	mustPanic("finish", func() { a.finish(nil) })
 }
