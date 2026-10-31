@@ -54,6 +54,9 @@ func TestRenderContainsCoreSections(t *testing.T) {
 			t.Errorf("render missing %q\n---\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, "被跳过") {
+		t.Errorf("skipped=0 的报告不应出现跳过警告:\n%s", out)
+	}
 }
 
 func TestRenderSkippedWarning(t *testing.T) {
@@ -63,11 +66,30 @@ func TestRenderSkippedWarning(t *testing.T) {
 	if !strings.Contains(out, "3 个键因不支持的编码被跳过") {
 		t.Errorf("missing skipped warning:\n%s", out)
 	}
+	if !strings.Contains(out, "mtime 未知") {
+		t.Errorf("missing mtime 未知:\n%s", out)
+	}
+}
+
+// 空 Report 冒烟：Render 不 panic，且不输出分布类段落。
+func TestRenderEmptyReport(t *testing.T) {
+	out := Render("/x/empty.rdb", 0, 0, &Report{})
+	for _, banned := range []string{"DB 分布", "类型:", "Top 前缀", "Top 大键", "被跳过"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("empty report should not contain %q:\n%s", banned, out)
+		}
+	}
+	if !strings.Contains(out, "总键数 0") {
+		t.Errorf("empty report should still have 总键数 0:\n%s", out)
+	}
 }
 
 func TestHumanBytes(t *testing.T) {
 	cases := map[uint64]string{
+		0:         "0B",
 		512:       "512B",
+		1023:      "1023B",
+		1024:      "1.0KB",
 		2048:      "2.0KB",
 		5 << 20:   "5.0MB",
 		3 << 30:   "3.0GB",

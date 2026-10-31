@@ -12,6 +12,8 @@ import (
 
 // Render 渲染分析报告。path/sizeBytes/mtimeUnix 由插件侧探测提供
 // （远端文件属性），其余来自聚合报告。输出面向 LLM 阅读的紧凑文本。
+// 前置条件：sizeBytes 预期非负（来自 stat 探测；负值会经 uint64 转换
+// 显示为异常大字节数）。
 func Render(path string, sizeBytes, mtimeUnix int64, r *Report) string {
 	var b strings.Builder
 
@@ -44,13 +46,18 @@ func Render(path string, sizeBytes, mtimeUnix int64, r *Report) string {
 		fmt.Fprintf(&b, "DB 分布: %s\n", strings.Join(parts, " · "))
 	}
 
-	// 类型分布（数量降序）
+	// 类型分布（数量降序，同数量按名字典序）
 	if len(r.Types) > 0 {
 		types := make([]string, 0, len(r.Types))
 		for typ := range r.Types {
 			types = append(types, typ)
 		}
-		sort.Slice(types, func(i, j int) bool { return r.Types[types[i]] > r.Types[types[j]] })
+		sort.Slice(types, func(i, j int) bool {
+			if r.Types[types[i]] != r.Types[types[j]] {
+				return r.Types[types[i]] > r.Types[types[j]]
+			}
+			return types[i] < types[j]
+		})
 		tp := make([]string, 0, len(types))
 		for _, typ := range types {
 			pct := 100 * r.Types[typ] / max(r.TotalKeys, 1)
