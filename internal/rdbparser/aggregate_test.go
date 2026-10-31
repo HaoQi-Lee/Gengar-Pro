@@ -143,6 +143,16 @@ func TestAggregatorTiebreak(t *testing.T) {
 	}
 }
 
+func TestAggregatorBigKeysTiebreak(t *testing.T) {
+	a := newAggregator(10)
+	a.add(&Entry{Key: "bb", Bytes: 100, Type: "string"})
+	a.add(&Entry{Key: "aa", Bytes: 100, Type: "string"})
+	r := a.finish(nil)
+	if r.BigKeys[0].Key != "aa" {
+		t.Errorf("BigKeys[0] = %s, want aa (字典序 tiebreak)", r.BigKeys[0].Key)
+	}
+}
+
 func TestAggregatorDefaultTopN(t *testing.T) {
 	a := newAggregator(0) // topN<=0 收敛为默认 10
 	for i := 0; i < 12; i++ {
