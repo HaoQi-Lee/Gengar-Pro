@@ -84,6 +84,8 @@ func (s *Server) handleXshellPreview(w http.ResponseWriter, r *http.Request, use
 			Duplicate: existing[fmt.Sprintf("%s|%d|%s", sess.Host, sess.Port, sess.User)],
 		})
 	}
+	// 审计只记解析计数（parsed= 可导入行数）；.xsh 内容与主机数据不入审计。
+	s.auditOp(username, "xshell_import_preview", fmt.Sprintf("parsed=%d hosts", len(rows)), nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rows": rows, "skipped": res.Skipped, "failed": res.Failed,
 	})
@@ -113,5 +115,6 @@ func (s *Server) handleXshellCommit(w http.ResponseWriter, r *http.Request, user
 			return
 		}
 	}
+	s.auditOp(username, "xshell_import_commit", fmt.Sprintf("imported=%d hosts", len(req.Hosts)), nil)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

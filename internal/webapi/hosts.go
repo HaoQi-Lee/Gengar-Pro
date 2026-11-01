@@ -114,6 +114,13 @@ func (s *Server) handleSaveHost(w http.ResponseWriter, r *http.Request, username
 		}
 		return
 	}
+	// 审计只落元数据与布尔（key_uploaded 标记请求是否携带非空私钥）；
+	// 私钥内容与密码/口令明文绝不入审计（凭据红线）。
+	s.auditOp(username, "host_save", "host="+h.Name, map[string]any{
+		"name": h.Name, "addr": h.Addr, "port": h.Port,
+		"auth_method":  h.Auth.Method,
+		"key_uploaded": req.KeyData != "",
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"id": h.ID})
 }
 
@@ -246,7 +253,8 @@ func (s *Server) saveHost(req hostReq, username string, isAdmin bool) (*host.Hos
 func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request, username string) {
 	id := r.PathValue("id")
 	_, isAdmin := s.viewerOf(username)
-	if s.findHostFor(id, username, isAdmin) == nil {
+	h := s.findHostFor(id, username, isAdmin)
+	if h == nil {
 		writeErr(w, http.StatusNotFound, "主机不存在")
 		return
 	}
@@ -254,6 +262,7 @@ func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request, userna
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.auditOp(username, "host_delete", "host="+h.Name, map[string]any{"name": h.Name})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -289,28 +298,50 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request, username
 	ex, err := s.core.ExecutorFor(h)
 	if err != nil {
 		s.setStatus(id, "fail")
-		writeErr(w, http.StatusBadGateway, "连接失败: "+err.Error())
+		msg := "连接失败: " + err.Error()
+		s.auditHostTest(username, h.Name, msg)
+		writeErr(w, http.StatusBadGateway, msg)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	if _, err := ex.RunShell(ctx, "echo gengar-ok"); err != nil {
 		s.setStatus(id, "fail")
-		writeErr(w, http.StatusBadGateway, "执行失败: "+err.Error())
+		msg := "执行失败: " + err.Error()
+		s.auditHostTest(username, h.Name, msg)
+		writeErr(w, http.StatusBadGateway, msg)
 		return
 	}
 	osInfo, _ := ex.RunShell(ctx, `. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s`)
 	if v := strings.TrimSpace(string(osInfo)); v != "" {
 		h.OS = v // 探测失败时保留清单里已有的 OS，不用空串覆盖
 	}
-	if s.findHostFor(id, username, isAdmin) == nil { // 探测窗口内被删：不回写（Save 会复活已删条目）
-		s.setStatus(id, "ok")
-		writeJSON(w, http.StatusOK, map[string]string{"message": "连通正常 · " + h.OS})
-		return
+	if s.findHostFor(id, username, isAdmin) != nil { // 探测窗口内被删：不回写（Save 会复活已删条目）
+		_ = s.core.Store().Save(h)
 	}
-	_ = s.core.Store().Save(h)
+	s.auditHostTest(username, h.Name, "")
 	s.setStatus(id, "ok")
 	writeJSON(w, http.StatusOK, map[string]string{"message": "连通正常 · " + h.OS})
+}
+
+// auditHostTest 连通测试结果落审计：failMsg 为空即成功（ok），非空取
+// 截断错文（长错文刷屏，且可能夹带拨号目标细节）。
+func (s *Server) auditHostTest(username, name, failMsg string) {
+	detail := "ok"
+	if failMsg != "" {
+		detail = truncRunes(failMsg, 200)
+	}
+	s.auditOp(username, "host_test", "host="+name+" "+detail, nil)
+}
+
+// truncRunes 超长时按 rune 截断 s 至 n 字符并以省略号收尾（按 rune 截
+// 不切开多字节字符）。
+func truncRunes(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n]) + "…"
 }
 
 // overlayStore 表单内测试的明文秘密覆盖层：Get 先查 plain（未保存的

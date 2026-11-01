@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"gengar-pro/internal/appcore"
+	"gengar-pro/internal/audit"
 	"gengar-pro/internal/host"
 )
 
@@ -433,5 +435,116 @@ func TestHostDraft(t *testing.T) {
 	}
 	if s.getStatus("nope") != "unknown" {
 		t.Fatal("draft test must not touch status without ID")
+	}
+}
+
+// TestHostsAudit 主机管理审计：host_save/host_delete/host_test 三事件。
+// 凭据红线：私钥内容与密码/口令明文绝不入审计——反向断言扫描全部条目
+// 的 Input/Output 全文（私钥标记取自 keyData 原串与 PEM 体内嵌段两种
+// 形态，分别逮「原样回传请求字段」与「落解码后内容」两类泄漏）。
+func TestHostsAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	ck := login(t, s, "alice", "pw1")
+	l := openTestAudit(t, s) // 登录后再开，排除 login_ok 干扰
+
+	// 保存 1：密码认证（不带私钥）→ key_uploaded=false
+	w, m := doJSON(t, s, "POST", "/api/hosts",
+		`{"name":"pwd1","addr":"10.0.0.1","port":2222,"user":"root","authMethod":"password","password":"pw-secret-1"}`, ck)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save password host = %d %v", w.Code, m)
+	}
+	id1, _ := m["id"].(string)
+
+	// 保存 2：私钥上传 + 口令（带私钥形态）→ key_uploaded=true
+	pemKey := genKeyPEM(t, "phrase-secret-1")
+	keyB64 := base64.StdEncoding.EncodeToString(pemKey)
+	w, m = doJSON(t, s, "POST", "/api/hosts",
+		fmt.Sprintf(`{"name":"key1","addr":"10.0.0.2","user":"root","authMethod":"key","keyData":%q,"keyPassphrase":"phrase-secret-1"}`, keyB64), ck)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save key host = %d %v", w.Code, m)
+	}
+
+	// host_save：两条（新建与上传各一），Input 为 JSON 且元数据齐备，
+	// key_uploaded 真假与两种请求形态一一对应
+	es := readAuditEntries(t, l)
+	var saves []audit.Entry
+	for _, e := range es {
+		if e.Tool == "host_save" {
+			saves = append(saves, e)
+		}
+	}
+	if len(saves) != 2 {
+		t.Fatalf("host_save 条数 = %d; want 2: %+v", len(saves), es)
+	}
+	wantUpload := map[string]bool{"pwd1": false, "key1": true}
+	for _, e := range saves {
+		if e.User != "alice" {
+			t.Fatalf("host_save user = %q; want alice", e.User)
+		}
+		var in map[string]any
+		if err := json.Unmarshal(e.Input, &in); err != nil {
+			t.Fatalf("host_save Input 非 JSON: %v (%s)", err, e.Input)
+		}
+		name, _ := in["name"].(string)
+		want, ok := wantUpload[name]
+		if !ok {
+			t.Fatalf("host_save 意外主机: %v", in)
+		}
+		if in["addr"] == nil || in["port"] == nil || in["auth_method"] == nil {
+			t.Fatalf("host_save Input 缺 addr/port/auth_method: %v", in)
+		}
+		if got, _ := in["key_uploaded"].(bool); got != want {
+			t.Fatalf("host_save %s key_uploaded = %v; want %v", name, got, want)
+		}
+	}
+
+	// 删除 → host_delete，Input 含 name
+	w, _ = doJSON(t, s, "DELETE", "/api/hosts/"+id1, "", ck)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete = %d", w.Code)
+	}
+	// 连通测试（127.0.0.1:1 必拒连——失败路径同样落审计）
+	_, m = doJSON(t, s, "POST", "/api/hosts",
+		`{"name":"tst","addr":"127.0.0.1","port":1,"user":"root","authMethod":"password"}`, ck)
+	id3, _ := m["id"].(string)
+	w, _ = doJSON(t, s, "POST", "/api/hosts/"+id3+"/test", "", ck)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("host test = %d; want 502（拒连）", w.Code)
+	}
+	es = readAuditEntries(t, l)
+	var del, ht *audit.Entry
+	for i := range es {
+		switch es[i].Tool {
+		case "host_delete":
+			del = &es[i]
+		case "host_test":
+			ht = &es[i]
+		}
+	}
+	if del == nil || !strings.Contains(string(del.Input), `"name":"pwd1"`) || !strings.Contains(del.Output, "pwd1") {
+		t.Fatalf("host_delete 条目 = %+v", del)
+	}
+	if ht == nil || ht.Output == "" {
+		t.Fatalf("host_test 条目 = %+v（Output 须非空）", ht)
+	}
+
+	// 红线反向断言：密码/口令明文与私钥内容绝不出现在任何条目 Input/Output
+	pemMarker := ""
+	for _, ln := range strings.Split(string(pemKey), "\n") {
+		if len(ln) >= 40 && !strings.HasPrefix(ln, "----") {
+			pemMarker = ln[10:40] // PEM base64 体内嵌段（逮解码后落盘内容泄漏）
+			break
+		}
+	}
+	if pemMarker == "" {
+		t.Fatal("测试私钥无可用标记段")
+	}
+	for _, e := range es {
+		blob := e.Output + string(e.Input)
+		for _, mark := range []string{"pw-secret-1", "phrase-secret-1", pemMarker, keyB64[40:100]} {
+			if strings.Contains(blob, mark) {
+				t.Fatalf("审计条目泄凭据 %q: %+v", mark, e)
+			}
+		}
 	}
 }

@@ -76,6 +76,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request, user
 	}
 	s.cfgMu.Unlock()
 	s.rebuildAllAgents() // cfgMu 释放后锁外重建（锁序见 rebuildAgent）
+	// 全掩码/无变更的保存也落一条 fields= 空清单事件（记录保存动作本身）
 	s.auditOp(username, "settings_save", "fields="+strings.Join(changed, ","), nil)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -41,8 +41,8 @@ func TestSettingsSaveAuditFields(t *testing.T) {
 	if len(es) != 2 || es[1].Tool != "settings_save" {
 		t.Fatalf("第二次保存事件 = %+v; want 第 2 条 settings_save", es)
 	}
-	if out := es[1].Output; !strings.Contains(out, "model") || strings.Contains(out, "api_key") {
-		t.Fatalf("Output = %q; want 仅含 model（api_key 掩码未改不入清单）", out)
+	if out := es[1].Output; !strings.Contains(out, "model") || strings.Contains(out, "api_key") || strings.Contains(out, "base_url") {
+		t.Fatalf("Output = %q; want 仅含 model（api_key 掩码、base_url 未变不入清单）", out)
 	}
 
 	// 红线反向断言：明文 key 不得出现在任何条目的 Input/Output 全文

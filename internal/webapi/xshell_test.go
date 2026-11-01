@@ -3,8 +3,10 @@ package webapi
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 
+	"gengar-pro/internal/audit"
 	"gengar-pro/internal/xshell"
 )
 
@@ -108,5 +110,45 @@ func TestXshellRequireAuth(t *testing.T) {
 	w, _ := doJSON(t, s, "POST", "/api/xshell/import", `{"files":[]}`, "")
 	if w.Code != 401 {
 		t.Fatalf("preview without login = %d", w.Code)
+	}
+}
+
+// TestXshellImportAudit 导入审计：preview 落 xshell_import_preview
+// （parsed=N hosts）、commit 落 xshell_import_commit（imported=N hosts）；
+// 两次成功请求之外无其他条目。
+func TestXshellImportAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	ck := login(t, s, "alice", "pw1")
+	l := openTestAudit(t, s)
+
+	body := `{"files":` + b64Files(xshell.File{Name: "web/a.xsh", Content: xshFor("10.0.0.1", "SSH")}) + `}`
+	w, _ := doJSON(t, s, "POST", "/api/xshell/import", body, ck)
+	if w.Code != 200 {
+		t.Fatalf("preview = %d", w.Code)
+	}
+	commit := `{"hosts":[{"name":"a","addr":"10.0.0.1","port":22,"user":"root","folder":"web","authMethod":"password"}]}`
+	w, _ = doJSON(t, s, "POST", "/api/xshell/commit", commit, ck)
+	if w.Code != 200 {
+		t.Fatalf("commit = %d", w.Code)
+	}
+
+	es := readAuditEntries(t, l)
+	if len(es) != 2 {
+		t.Fatalf("审计条数 = %d; want 2: %+v", len(es), es)
+	}
+	var pv, cm *audit.Entry
+	for i := range es {
+		switch es[i].Tool {
+		case "xshell_import_preview":
+			pv = &es[i]
+		case "xshell_import_commit":
+			cm = &es[i]
+		}
+	}
+	if pv == nil || !strings.Contains(pv.Output, "parsed=1") {
+		t.Fatalf("xshell_import_preview 条目 = %+v", pv)
+	}
+	if cm == nil || !strings.Contains(cm.Output, "imported=1") {
+		t.Fatalf("xshell_import_commit 条目 = %+v", cm)
 	}
 }
