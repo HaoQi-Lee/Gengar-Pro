@@ -53,7 +53,7 @@ type scriptToolCall struct {
 	Input map[string]any `yaml:"input"`
 }
 
-// assertionSpec 是一条断言。八种类型（spec 字段按类型取用）：
+// assertionSpec 是一条断言。九种类型（spec 字段按类型取用）：
 //   - tool_called{name, min_count}        —— audit.jsonl Tool 字段命中次数
 //   - tool_not_called{name}               —— audit 零记录
 //   - response_contains{matches}          —— stdout 正则命中
@@ -62,18 +62,28 @@ type scriptToolCall struct {
 //   - audit_host_names{tool, names}       —— 存在一条 audit Hosts 集合恰为 names（序无关）
 //   - audit_rejected{tool}                —— 存在一条 approved=false（确认门控拒绝）
 //   - memory_contains{host, matches}      —— dataDir/memory/<host>.json 内容正则命中
+//   - audit_field{tool, user?, session_re?, is_error?, output_re?, input_re?, count?}
+//     —— 字段级匹配：按 tool + 可选字段过滤 audit，断言命中条数
+//     （count 缺省 >=1；显式 N 恰为 N；显式 0 = 不得存在）。
+//     覆盖 login_ok/chat_input 等非工具事件与 User/Session/IsError/
+//     Input/Output 字段
 type assertionSpec struct {
 	Type string   `yaml:"type"`
 	Spec specBody `yaml:"spec"`
 }
 
 type specBody struct {
-	Matches  string   `yaml:"matches"`
-	Tool     string   `yaml:"tool"`
-	MinCount int      `yaml:"min_count"` // 0 视为 1
-	Count    int      `yaml:"count"`
-	Names    []string `yaml:"names"` // audit_host_names：Hosts 集合目标
-	Host     string   `yaml:"host"`  // memory_contains：受管主机名
+	Matches   string   `yaml:"matches"`
+	Tool      string   `yaml:"tool"`
+	MinCount  int      `yaml:"min_count"`  // 0 视为 1
+	Count     *int     `yaml:"count"`      // audit_hosts：Hosts 长度（必填）；audit_field：命中条数三态——nil 缺省 >=1，显式 0 = 不得存在
+	Names     []string `yaml:"names"`      // audit_host_names：Hosts 集合目标
+	Host      string   `yaml:"host"`       // memory_contains：受管主机名
+	User      *string  `yaml:"user"`       // audit_field：User 精确匹配；nil=不过滤，显式 ""（YAML user: ""）才匹配空（如未认证的 login_fail）
+	SessionRE string   `yaml:"session_re"` // audit_field：Session 正则
+	IsError   *bool    `yaml:"is_error"`   // audit_field：IsError 布尔过滤；nil=不过滤
+	OutputRE  string   `yaml:"output_re"`  // audit_field：Output 正则
+	InputRE   string   `yaml:"input_re"`   // audit_field：Input 的 JSON 文本正则
 }
 
 // loadCase 读入并校验一个用例文件。
@@ -128,6 +138,29 @@ func loadCase(path string) (*e2eCase, error) {
 			if len(a.Spec.Names) == 0 {
 				return nil, fmt.Errorf("%s: assertion %d (audit_host_names): names required", path, i)
 			}
+		case "audit_hosts":
+			// count 改指针三态（audit_field 的「缺省 >=1 / 显式 0」需要）后，
+			// audit_hosts 仍语义不变：count 必填，缺失在加载期报错而非静默
+			// 匹配零主机条目。
+			if a.Spec.Count == nil {
+				return nil, fmt.Errorf("%s: assertion %d (audit_hosts): count required", path, i)
+			}
+		case "audit_field":
+			if a.Spec.Tool == "" {
+				return nil, fmt.Errorf("%s: assertion %d (audit_field): tool required", path, i)
+			}
+			for _, p := range []struct{ name, pattern string }{
+				{"session_re", a.Spec.SessionRE},
+				{"output_re", a.Spec.OutputRE},
+				{"input_re", a.Spec.InputRE},
+			} {
+				if p.pattern == "" {
+					continue
+				}
+				if _, err := regexp.Compile(p.pattern); err != nil {
+					return nil, fmt.Errorf("%s: assertion %d (audit_field): bad %s pattern %q: %v", path, i, p.name, p.pattern, err)
+				}
+			}
 		}
 	}
 	return &c, nil
@@ -181,12 +214,16 @@ func evalAssertion(a assertionSpec, stdout string, entries []audit.Entry, dataDi
 	case "response_not_contains":
 		return matchStdout(a.Spec.Matches, stdout, false)
 	case "audit_hosts":
+		count := 0
+		if a.Spec.Count != nil {
+			count = *a.Spec.Count // loadCase 已要求显式给出；直构断言（单测）缺省按 0，与旧 int 零值语义一致
+		}
 		for _, e := range entries {
-			if e.Tool == a.Spec.Tool && len(e.Hosts) == a.Spec.Count {
+			if e.Tool == a.Spec.Tool && len(e.Hosts) == count {
 				return nil
 			}
 		}
-		return fmt.Errorf("no audit entry for tool %q with %d host(s)", a.Spec.Tool, a.Spec.Count)
+		return fmt.Errorf("no audit entry for tool %q with %d host(s)", a.Spec.Tool, count)
 	case "audit_host_names":
 		for _, e := range entries {
 			if e.Tool == a.Spec.Tool && sameNameSet(e.Hosts, a.Spec.Names) {
@@ -203,9 +240,103 @@ func evalAssertion(a assertionSpec, stdout string, entries []audit.Entry, dataDi
 		return fmt.Errorf("no rejected (approved=false) audit entry for tool %q", a.Spec.Tool)
 	case "memory_contains":
 		return matchMemoryFile(dataDir, a.Spec.Host, a.Spec.Matches)
+	case "audit_field":
+		return evalAuditField(a.Spec, entries)
 	default:
 		return fmt.Errorf("unknown assertion type %q", a.Type)
 	}
+}
+
+// evalAuditField 是 audit_field 断言的求值体：按 tool（必填）+ 可选字段
+// （user 精确、session/output/input 正则、is_error 布尔）过滤 audit 条目，
+// 再核对命中条数——count 缺省要求 >=1；显式 N 要求恰为 N（显式 0 =
+// 不得存在，用于「不得出现某类事件」的否定断言）。
+func evalAuditField(sb specBody, entries []audit.Entry) error {
+	sessionRe, err := compileFieldRE(sb.Tool, "session_re", sb.SessionRE)
+	if err != nil {
+		return err
+	}
+	outputRe, err := compileFieldRE(sb.Tool, "output_re", sb.OutputRE)
+	if err != nil {
+		return err
+	}
+	inputRe, err := compileFieldRE(sb.Tool, "input_re", sb.InputRE)
+	if err != nil {
+		return err
+	}
+	match := func(e audit.Entry) bool {
+		if e.Tool != sb.Tool {
+			return false
+		}
+		if sb.User != nil && e.User != *sb.User {
+			return false
+		}
+		if sb.IsError != nil && e.IsError != *sb.IsError {
+			return false
+		}
+		if sessionRe != nil && !sessionRe.MatchString(e.Session) {
+			return false
+		}
+		if outputRe != nil && !outputRe.MatchString(e.Output) {
+			return false
+		}
+		if inputRe != nil && !inputRe.MatchString(string(e.Input)) {
+			return false
+		}
+		return true
+	}
+	n := 0
+	for _, e := range entries {
+		if match(e) {
+			n++
+		}
+	}
+	if sb.Count == nil {
+		if n < 1 {
+			return fmt.Errorf("audit_field [%s] matched %d entry(ies), want >= 1", describeFieldFilter(sb), n)
+		}
+		return nil
+	}
+	if n != *sb.Count {
+		return fmt.Errorf("audit_field [%s] matched %d entry(ies), want == %d", describeFieldFilter(sb), n, *sb.Count)
+	}
+	return nil
+}
+
+// compileFieldRE 编译 audit_field 的一个可选正则；空模式返回 nil（不过滤）。
+// 坏正则在求值期报错（loadCase 已拦截 YAML 来源，这里兜底直构断言）。
+func compileFieldRE(tool, name, pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("audit_field tool %q: bad %s pattern %q: %v", tool, name, pattern, err)
+	}
+	return re, nil
+}
+
+// describeFieldFilter 拼出 audit_field 的匹配条件摘要（只列显式给出的
+// 字段），报错信息自解释——不看 YAML 也能知道在断言什么。
+func describeFieldFilter(sb specBody) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "tool=%q", sb.Tool)
+	if sb.User != nil {
+		fmt.Fprintf(&b, " user=%q", *sb.User)
+	}
+	if sb.SessionRE != "" {
+		fmt.Fprintf(&b, " session_re=%q", sb.SessionRE)
+	}
+	if sb.IsError != nil {
+		fmt.Fprintf(&b, " is_error=%v", *sb.IsError)
+	}
+	if sb.OutputRE != "" {
+		fmt.Fprintf(&b, " output_re=%q", sb.OutputRE)
+	}
+	if sb.InputRE != "" {
+		fmt.Fprintf(&b, " input_re=%q", sb.InputRE)
+	}
+	return b.String()
 }
 
 // sameNameSet 报告两个名字切片是否为同一集合（序无关，多重集相等：
