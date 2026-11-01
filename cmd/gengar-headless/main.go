@@ -143,23 +143,30 @@ func main() {
 		if line == "" {
 			continue
 		}
+		// chat_input 审计：非空行即记——斜杠命令同样是用户输入，与 web 侧
+		// handleSubmitChat 落点对齐（判空之后、命令分发之前）。headless 无
+		// 法复用 webapi 的 auditOp/truncAuditText（私有 helper），就地落一条：
+		// User 空（设计 §3.4），Session/Output 带会话标识；原文 8K rune 截断
+		// 防超长行灌爆分片。
+		if auditLog != nil {
+			var in json.RawMessage
+			if b, err := json.Marshal(map[string]string{"text": truncAudit8K(line)}); err == nil {
+				in = b
+			}
+			_ = auditLog.Log(audit.Entry{
+				TS:      time.Now().Format(time.RFC3339),
+				Session: session,
+				Tool:    "chat_input",
+				Input:   in,
+				Output:  "session=" + session,
+			})
+		}
 		if strings.HasPrefix(line, "/") {
 			cmdName, args := command.SplitArgs(line)
 			if cmd := reg.Lookup(cmdName); cmd != nil {
 				cmd.Run(command.Context{Agent: a, Out: ui.NewLineWriter(sink.Info), Ctx: ctx, Args: args})
 				continue
 			}
-		}
-		// chat_input 审计：headless 无法复用 webapi 的 auditOp/truncAuditText
-		// （私有 helper），就地落一条（user 空、无会话对象——与设计 §3.4 的
-		// headless 约定一致）；原文 8K rune 截断防超长行灌爆分片。斜杠命令
-		// 在上方分支已 continue，不进本处（即不记为 chat_input）。
-		if auditLog != nil {
-			var in json.RawMessage
-			if b, err := json.Marshal(map[string]string{"text": truncAudit8K(line)}); err == nil {
-				in = b
-			}
-			_ = auditLog.Log(audit.Entry{TS: time.Now().Format(time.RFC3339), Tool: "chat_input", Input: in})
 		}
 		_ = a.ProcessInput(ctx, line)
 	}
