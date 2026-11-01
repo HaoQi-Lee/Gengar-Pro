@@ -120,7 +120,9 @@ func (s *Server) chatOpen(id, owner string) *chatSession {
 		return cs
 	}
 	_, isAdmin := s.viewerOf(owner)
-	cs := newChatSession(s.core, owner, isAdmin, func(owner, sid string, n int) {
+	// 闭包首参留空（_）：owner 直接用外层 chatOpen 的捕获值——形参同名
+	// 遮蔽曾让「用的是哪个 owner」要追进 newChatSession 才能确认。
+	cs := newChatSession(s.core, owner, isAdmin, func(_, sid string, n int) {
 		// onIdle 路径独占 ws_auto_cancel（用户取消按钮走 task_cancel，设计
 		// §3.5）：回调只做审计——unsubscribe 在 hub 锁外调它，auditOp 只碰
 		// audit logger 自有锁，不回头取 chatsMu/taskMu/hub 锁，无锁序环。

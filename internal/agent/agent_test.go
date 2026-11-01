@@ -1018,6 +1018,73 @@ func TestAuditEntryWritten(t *testing.T) {
 	})
 }
 
+// TestAuditAskUserEntry: ask_user 分支曾提前 continue 完全绕过审计——
+// 正常回答与 AskUser 报错两条路径都必须落条目（ask_user 面向用户而非
+// 主机，无 hosts 概念，Hosts 留空）。ask_user 不走 registry 分发，
+// 空 registry 即可驱动。
+func TestAuditAskUserEntry(t *testing.T) {
+	askEvents := func(id string) []claude.StreamEvent {
+		return []claude.StreamEvent{
+			{Type: claude.EventMessageStart},
+			{Type: claude.EventContentBlockStart, Index: 0, Block: claude.BlockToolUse},
+			{Type: claude.EventContentBlockStop, Index: 0, Block: claude.BlockToolUse,
+				ToolID: id, ToolName: "ask_user",
+				ToolInput: json.RawMessage(`{"question":"清理哪种日志？"}`)},
+			{Type: claude.EventMessageDelta, StopReason: "tool_use"},
+			{Type: claude.EventMessageStop},
+		}
+	}
+
+	t.Run("answered", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		logger, err := audit.Open(path)
+		if err != nil {
+			t.Fatalf("audit.Open: %v", err)
+		}
+		defer logger.Close()
+
+		client := &fakeStreamingClient{events: askEvents("ask-1")}
+		sink := &fakeSink{askReply: "压缩归档"}
+		a := New(&config.Config{MaxSteps: 1}, client, plugin.NewRegistry(), safety.NewGate(), sink, nil,
+			WithAudit(logger), WithSession("sess-ask"))
+		a.ProcessInput(context.Background(), "清理日志")
+
+		e := readSingleAuditEntry(t, path, "ask_user")
+		if e.Session != "sess-ask" || !e.Approved || e.IsError {
+			t.Fatalf("ask_user entry fields wrong: %+v", e)
+		}
+		if !contains(string(e.Input), "清理哪种日志？") {
+			t.Fatalf("ask_user input = %s; want question json", e.Input)
+		}
+		if e.Output != "压缩归档" {
+			t.Fatalf("ask_user output = %q; want answer", e.Output)
+		}
+	})
+
+	t.Run("ask error", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		logger, err := audit.Open(path)
+		if err != nil {
+			t.Fatalf("audit.Open: %v", err)
+		}
+		defer logger.Close()
+
+		client := &fakeStreamingClient{events: askEvents("ask-2")}
+		sink := &fakeSink{askErr: errors.New("user dismissed")}
+		a := New(&config.Config{MaxSteps: 1}, client, plugin.NewRegistry(), safety.NewGate(), sink, nil,
+			WithAudit(logger), WithSession("sess-ask"))
+		a.ProcessInput(context.Background(), "清理日志")
+
+		e := readSingleAuditEntry(t, path, "ask_user")
+		if !e.IsError {
+			t.Fatalf("ask_user error entry must set IsError: %+v", e)
+		}
+		if !contains(e.Output, "ask error") || !contains(e.Output, "user dismissed") {
+			t.Fatalf("ask_user error output = %q; want error summary", e.Output)
+		}
+	})
+}
+
 // TestAuditWriteFailureLogged: 审计写入失败不得静默吞掉，必须以
 // audit_error 事件落到 observability 日志。
 func TestAuditWriteFailureLogged(t *testing.T) {

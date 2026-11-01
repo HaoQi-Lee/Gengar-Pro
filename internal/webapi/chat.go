@@ -158,8 +158,9 @@ func (s *Server) handleCancelChat(w http.ResponseWriter, r *http.Request, userna
 	if cancel != nil {
 		cancel()
 		// task_cancel 仅记用户主动取消（无活动任务不记，避免噪音；断连
-		// 自动取消由 ws_auto_cancel 承载，见设计 §3.5）。
-		s.auditOp(username, "task_cancel", "session="+st.id, nil)
+		// 自动取消由 ws_auto_cancel 承载，见设计 §3.5）。auditOpS 回填
+		// Session，与会话内 agent 条目跨条目关联。
+		s.auditOpS(username, st.id, "task_cancel", "session="+st.id, nil)
 	}
 	// 返回值（取消数）不消费：用户主动取消已由上面的 task_cancel 承载，
 	// ws_auto_cancel 只记断连自动取消（onIdle 路径，设计 §3.5 不串扰）。

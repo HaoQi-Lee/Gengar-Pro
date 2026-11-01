@@ -503,8 +503,10 @@ func TestChatInputAudit(t *testing.T) {
 }
 
 // TestTaskCancelAudit task_cancel 审计：有活动任务（cancel 非 nil）记
-// session=；无活动任务不记（避免噪音）。busy/cancel 白盒置位——真实任务
-// 需 Claude API 单测不可达，置位两行即 handleSubmitChat 任务锁段的等价物。
+// session=，Session 结构化回填（与会话内 agent 条目跨条目关联，Task 6
+// 回补断言）；无活动任务不记（避免噪音）。busy/cancel 白盒置位——真实
+// 任务需 Claude API 单测不可达，置位两行即 handleSubmitChat 任务锁段的
+// 等价物。
 func TestTaskCancelAudit(t *testing.T) {
 	s := newTestServer(t, map[string]string{"alice": "pw1"})
 	ck := login(t, s, "alice", "pw1")
@@ -535,6 +537,9 @@ func TestTaskCancelAudit(t *testing.T) {
 	es := readAuditEntries(t, l)
 	if len(es) != 1 || es[0].Tool != "task_cancel" || es[0].User != "alice" || es[0].Output != "session="+st.id {
 		t.Fatalf("task_cancel 事件 = %+v", es)
+	}
+	if es[0].Session != st.id {
+		t.Fatalf("task_cancel Session = %q; want %s", es[0].Session, st.id)
 	}
 }
 

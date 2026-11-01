@@ -421,6 +421,27 @@ func (a *Agent) ProcessInput(ctx context.Context, input string) string {
 						ToolID:    tc.id,
 						Error:     err.Error(),
 					})
+					// ask_user 同样落审计：本分支曾提前 continue 整体绕过
+					// ——澄清提问是用户直接决议的工具调用，零记录不可接受。
+					// 提问面向用户而非主机，Hosts 留空；Output 记错误摘要以
+					// 区分于回答。
+					if a.auditLog != nil {
+						if aerr := a.auditLog.Log(audit.Entry{
+							TS:       time.Now().Format(time.RFC3339),
+							Session:  a.session,
+							Tool:     tc.name,
+							Input:    tc.input,
+							Approved: true, // 澄清不走安全门，即视为放行
+							IsError:  true,
+							Output:   "ask error: " + err.Error(),
+						}); aerr != nil {
+							a.log.Log(observability.Event{
+								Timestamp: time.Now().Format(time.RFC3339Nano),
+								Type:      "audit_error",
+								Error:     aerr.Error(),
+							})
+						}
+					}
 					continue
 				}
 				a.conv.AddToolResult(tc.id, answer)
@@ -431,6 +452,23 @@ func (a *Agent) ProcessInput(ctx context.Context, input string) string {
 					ToolID:    tc.id,
 					Output:    answer,
 				})
+				if a.auditLog != nil {
+					if aerr := a.auditLog.Log(audit.Entry{
+						TS:       time.Now().Format(time.RFC3339),
+						Session:  a.session,
+						Tool:     tc.name,
+						Input:    tc.input,
+						Approved: true,
+						IsError:  false,
+						Output:   answer,
+					}); aerr != nil {
+						a.log.Log(observability.Event{
+							Timestamp: time.Now().Format(time.RFC3339Nano),
+							Type:      "audit_error",
+							Error:     aerr.Error(),
+						})
+					}
+				}
 				continue
 			}
 
