@@ -1,7 +1,10 @@
-# E08 —— redis 插件三工具全链路：redis: true 触发 startRedisHost 在容器内
-# 装好 redis（alpine 3.20 → redis 7.2.9，RDB v11 与 rdbparser 夹具同版）、
-# 造 6 键并 SAVE 出 /tmp/dump.rdb。同一会话三回合走完「发现 → 操作 → 离线
-# 分析」，全部是真实执行（SSH RunArgv / SFTP FetchFile / 本地 rdbparser）：
+# E08 —— redis 插件三工具全链路：redis: true 触发两件事——用例主机起自
+# 预装了 redis 的镜像变体（gengar-e2e-sshd-redis，base 之上叠 apk add 层，
+# 网络成本在构建期付清；redis 7.2.9 / RDB v11 与 rdbparser 夹具同版）、
+# startRedisHost 在容器内起实例造 6 键并 SAVE 出 dump（路径 = sshd.go 的
+# redisDumpPath 常量；下面 redis_rdb 的显式 path 是同一值，改须两处同步）。
+# 同一会话三回合走完「发现 → 操作 → 离线分析」，全部是真实执行（SSH
+# RunArgv / SFTP FetchFile / 本地 rdbparser）：
 #   1. redis_discover：busybox pgrep -af 解析出 *:6379 → PING/INFO 探活，
 #      stdout 应出现 :6379 与版本行
 #   2. redis_cli DBSIZE：命令透传，stdout 回显独占一行的键数 6
@@ -29,7 +32,7 @@ script:
       - id: r1
         name: redis_rdb
         input:
-          path: /tmp/dump.rdb
+          path: /tmp/dump.rdb # = sshd.go 的 redisDumpPath 常量（YAML 引不了 Go 常量，注释互指）
           hosts: ["e2e-host-1"]
   - final_text: "redis 巡检完成：实例在 6379 端口，库内 6 键，RDB 报告总键数 6。"
 inputs:
