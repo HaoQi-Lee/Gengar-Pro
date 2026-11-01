@@ -41,9 +41,9 @@ type StubLLM struct {
 // 截断：文本发完但 stop_reason 不是 end_turn），覆盖 agent 侧对停机
 // 原因的分支处理。
 type Turn struct {
-	ToolCalls []ToolCall
-	FinalText string
-	Text      string
+	ToolCalls  []ToolCall
+	FinalText  string
+	Text       string
 	StopReason string
 }
 
@@ -191,7 +191,7 @@ type frameStartMessage struct {
 }
 
 type frameMessageStart struct {
-	Type    string           `json:"type"`
+	Type    string            `json:"type"`
 	Message frameStartMessage `json:"message"`
 }
 

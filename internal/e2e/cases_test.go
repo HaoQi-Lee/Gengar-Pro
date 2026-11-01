@@ -247,6 +247,9 @@ func TestEvalAssertion(t *testing.T) {
 		audit.Entry{Tool: "execute_command", Hosts: []string{"e2e-host-1", "e2e-host-2"}, Approved: true},
 		audit.Entry{Tool: "system_info", Hosts: []string{"e2e-host-1"}, Approved: true, IsError: true},
 		audit.Entry{Tool: "write_file", Hosts: []string{"e2e-host-1"}, Approved: false, IsError: true},
+		// Hosts 为 nil 的非工具事件（chat_input 等）：audit_hosts 直构断言
+		// 缺 Count 时的 0 兜底正是命中这类条目。
+		audit.Entry{Tool: "chat_input", User: "alice"},
 	)
 	cases := []struct {
 		name    string
@@ -269,6 +272,9 @@ func TestEvalAssertion(t *testing.T) {
 		{"audit_hosts 数量不符", assertionSpec{Type: "audit_hosts", Spec: specBody{Tool: "execute_command", Count: intptr(1)}}, stdout, aud, true},
 		{"audit_hosts 工具无记录", assertionSpec{Type: "audit_hosts", Spec: specBody{Tool: "ping", Count: intptr(2)}}, stdout, aud, true},
 		{"audit_hosts 空审计", assertionSpec{Type: "audit_hosts", Spec: specBody{Tool: "execute_command", Count: intptr(2)}}, stdout, nil, true},
+		// 直构断言 Count 为 nil → 按 0 匹配（loadCase 已强制 YAML 显式给
+		// count，此路径只服务单测直构；锁定兼容语义：0 主机条目可命中）。
+		{"audit_hosts 直构 nil Count 按 0 匹配", assertionSpec{Type: "audit_hosts", Spec: specBody{Tool: "chat_input"}}, stdout, aud, false},
 		{"audit_host_names 集合相等", assertionSpec{Type: "audit_host_names", Spec: specBody{Tool: "execute_command", Names: []string{"e2e-host-1", "e2e-host-2"}}}, stdout, aud, false},
 		{"audit_host_names 序无关", assertionSpec{Type: "audit_host_names", Spec: specBody{Tool: "execute_command", Names: []string{"e2e-host-2", "e2e-host-1"}}}, stdout, aud, false},
 		{"audit_host_names 多出主机", assertionSpec{Type: "audit_host_names", Spec: specBody{Tool: "execute_command", Names: []string{"e2e-host-1"}}}, stdout, aud, true},

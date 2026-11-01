@@ -80,10 +80,10 @@ type specBody struct {
 	Names     []string `yaml:"names"`      // audit_host_names：Hosts 集合目标
 	Host      string   `yaml:"host"`       // memory_contains：受管主机名
 	User      *string  `yaml:"user"`       // audit_field：User 精确匹配；nil=不过滤，显式 ""（YAML user: ""）才匹配空（如未认证的 login_fail）
-	SessionRE string   `yaml:"session_re"` // audit_field：Session 正则
+	SessionRE string   `yaml:"session_re"` // audit_field：Session 正则；空串=不过滤（与空正则语义等价，无需指针三态）
 	IsError   *bool    `yaml:"is_error"`   // audit_field：IsError 布尔过滤；nil=不过滤
-	OutputRE  string   `yaml:"output_re"`  // audit_field：Output 正则
-	InputRE   string   `yaml:"input_re"`   // audit_field：Input 的 JSON 文本正则
+	OutputRE  string   `yaml:"output_re"`  // audit_field：Output 正则；空串=不过滤（同上）
+	InputRE   string   `yaml:"input_re"`   // audit_field：Input 的 JSON 文本正则；空串=不过滤（同上）
 }
 
 // loadCase 读入并校验一个用例文件。
