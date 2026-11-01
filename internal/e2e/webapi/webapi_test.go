@@ -3,12 +3,14 @@
 package webapi
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"gengar-pro/internal/audit"
 	"gengar-pro/internal/e2e"
 )
 
@@ -201,19 +203,14 @@ func TestW02HostCRUD(t *testing.T) {
 
 	c := loginOK(t, p, adminUser, adminPass)
 
-	const (
-		restName = "w02-rest-host"
-		// 容器账号密码同 internal/e2e 的 e2ePass（integration 的
-		// sshd.Dockerfile 内置 root:gengar-it-pass）。用真实凭据当脱敏
-		// 标记最硬：它必须真的能拨通容器，又绝不允许出现在审计里。
-		sshPass = "gengar-it-pass"
-	)
+	const restName = "w02-rest-host"
 
 	// 建主机：密码认证（字段对照 webapi 单测的 hostReq）。密码进 server
 	// 的加密秘密库（hosts 行只留 passwordRef），清单里能看到它。
+	// 凭据值与脱敏红线见包级常量 sshHostPass 的注释。
 	m := c.json(t, http.MethodPost, "/api/hosts", map[string]any{
 		"name": restName, "addr": target.Addr, "port": target.Port,
-		"user": "root", "authMethod": "password", "password": sshPass,
+		"user": "root", "authMethod": "password", "password": sshHostPass,
 	})
 	id, _ := m["id"].(string)
 	if id == "" {
@@ -259,11 +256,337 @@ func TestW02HostCRUD(t *testing.T) {
 				sawDelete = true
 			}
 		}
-		if strings.Contains(string(e.Input), sshPass) || strings.Contains(e.Output, sshPass) {
+		if strings.Contains(string(e.Input), sshHostPass) || strings.Contains(e.Output, sshHostPass) {
 			t.Errorf("审计 %s 条目泄漏 ssh 密码明文: Input=%s Output=%q", e.Tool, e.Input, e.Output)
 		}
 	}
 	if !sawSave || !sawTest || !sawDelete {
 		t.Errorf("审计三事件缺失: save=%v test=%v delete=%v", sawSave, sawTest, sawDelete)
+	}
+}
+
+// sshHostPass 容器 sshd 的 root 密码（同 internal/e2e 的 e2ePass；integration
+// 的 sshd.Dockerfile 内置）。用真实凭据当脱敏标记最硬：它必须真的能拨通
+// 容器，又绝不允许出现在审计里。
+const sshHostPass = "gengar-it-pass"
+
+// provisionExecHost 建一台可真执行的目标机（W03/W04 共用）：Docker sshd
+// 容器由 StartHosts 起好，主机条目走 REST 建——SeedHosts 播的 e2e-pass
+// 密码引用只在 headless 的 --secrets 注入下可解析，server 用自己的加密
+// 秘密库且无注入口，execute_command 要真拨通必须经 REST 把密码写进库
+// （W02 已验证的路径）。主机名沿用容器名 e2e-host-N：桩工具调用的 hosts
+// 与审计的 Hosts 断言都引用它。
+func provisionExecHost(t *testing.T, c *apiClient, target e2e.HostSpec) {
+	t.Helper()
+	m := c.json(t, http.MethodPost, "/api/hosts", map[string]any{
+		"name": target.Name, "addr": target.Addr, "port": target.Port,
+		"user": "root", "authMethod": "password", "password": sshHostPass,
+	})
+	if id, _ := m["id"].(string); id == "" {
+		t.Fatalf("建执行目标主机 %s 返回空 id: %v", target.Name, m)
+	}
+}
+
+// jsonStrings 把 JSON any 数组读成字符串集合（confirm 帧 reqs 的 Hosts
+// 等嵌套字段的包含断言用；nil/形态不符返回空集）。
+func jsonStrings(v any) map[string]bool {
+	m := map[string]bool{}
+	arr, _ := v.([]any)
+	for _, it := range arr {
+		if s, ok := it.(string); ok {
+			m[s] = true
+		}
+	}
+	return m
+}
+
+// containsStr 报告 s 是否在列表里（审计 Hosts 的包含断言）。
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// frameInt 读帧的数值字段（seq/next 等在 map 里是 float64）。
+func frameInt(f map[string]any, key string) int {
+	n, _ := f[key].(float64)
+	return int(n)
+}
+
+// auditStep 是审计链断言的一环：tool 名 + 谓词（nil = 仅按 tool 匹配）。
+type auditStep struct {
+	tool string
+	ok   func(e audit.Entry) bool
+}
+
+// assertAuditChain 验证 steps 按给定顺序在 entries 中出现：单趟扫描，
+// 当前步的 (tool, 谓词) 命中即前进。无关条目（login_ok/host_save 等
+// 背景）穿插不破坏链——断的是因果序而非紧邻。全部步命中才过；否则
+// 报错附停在第几步与全量 tool 序列辅助诊断。
+func assertAuditChain(t *testing.T, entries []audit.Entry, steps []auditStep) {
+	t.Helper()
+	hit := 0
+	for _, e := range entries {
+		if hit < len(steps) && e.Tool == steps[hit].tool && (steps[hit].ok == nil || steps[hit].ok(e)) {
+			hit++
+		}
+	}
+	if hit < len(steps) {
+		var tools []string
+		for _, e := range entries {
+			tools = append(tools, e.Tool)
+		}
+		t.Fatalf("审计链断在第 %d/%d 步（%s），已见 tool 序列: %v", hit+1, len(steps), steps[hit].tool, tools)
+	}
+}
+
+// waitAuditEntries 轮询 ReadAudit 直至谓词命中并返回当时的条目快照。
+// 服务端落审计在自己的 goroutine 里（断线取消链尤其异步：读循环感知
+// 断链 → unsubscribe → onIdle → CancelPendings → 落盘），用例侧收到
+// 「已发生」的信号（WS 帧/REST 响应）不保证条目已 flush——轮询是唯一
+// 确定性等法；上界 timeout，超时附 tool 序列诊断。
+func waitAuditEntries(t *testing.T, dataDir string, timeout time.Duration, pred func([]audit.Entry) bool) []audit.Entry {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		es := e2e.ReadAudit(t, dataDir)
+		if pred(es) {
+			return es
+		}
+		if time.Now().After(deadline) {
+			var tools []string
+			for _, e := range es {
+				tools = append(tools, e.Tool)
+			}
+			t.Fatalf("等待审计条目超时（%v），已见 tool 序列: %v", timeout, tools)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// openChatWS 拨对话 WS（session 空 = 服务端新建）并消费首帧 hello，
+// 返回客户端与会话 id（hello 必为首帧是服务端语义，waitEvent 的跳读
+// 会把它当普通帧丢掉，所以这里单独 next 一次）。
+func openChatWS(t *testing.T, c *apiClient) (*wsClient, string) {
+	t.Helper()
+	w := dialChatWS(t, c, "", 0)
+	hello := w.next(t, 10*time.Second)
+	if hello["t"] != "hello" {
+		t.Fatalf("WS 首帧 = %v; want hello", hello["t"])
+	}
+	sid, _ := hello["session"].(string)
+	if sid == "" {
+		t.Fatalf("hello 未带 session: %v", hello)
+	}
+	return w, sid
+}
+
+// TestW03ChatConfirmFlow 对话确认流全链路（Docker sshd 真机）：WS 开会话
+// → POST /api/chat 触发 Risky 工具 → confirm 帧（reqs 锚工具与目标主机）
+// → REST 批准 → confirm_done → tool_start → tool_result（容器真执行，
+// body 含 df 的 Filesystem 表头）→ done；桩消费两回合（工具 + 拒绝后的
+// 收束文本）；审计链 chat_input → confirm_resolve → execute_command 按
+// 文件序成立；第二轮纯文本消息正常 done（会话可续用、单任务锁已复位）。
+//
+// 命令取 "df -h; touch /tmp/gengar-w03"：df -h 单独在只读白名单（Safe
+// 不弹确认），touch 段不在——分段判定下整条命令 Risky 必弹确认，同时
+// df 的输出（Filesystem 表头）保留在 tool_result 里当真执行锚点。
+func TestW03ChatConfirmFlow(t *testing.T) {
+	hs := e2e.StartHosts(t, 1) // Docker 缺失 → Skip（同 headless 档约定）
+	target := hs[0]
+
+	dataDir := t.TempDir()
+	stub := e2e.StartStubLLM(t, []e2e.Turn{
+		{ToolCalls: []e2e.ToolCall{{ID: "w03t1", Name: "execute_command", Input: map[string]any{
+			"command": "df -h; touch /tmp/gengar-w03", "hosts": []string{target.Name},
+		}}}},
+		{FinalText: "磁盘检查完成"},
+		{FinalText: "总结完成"},
+	})
+	p := startServer(t, dataDir, stub.URL(), "e2e-stub-key")
+	c := loginOK(t, p, adminUser, adminPass)
+	provisionExecHost(t, c, target)
+
+	w, sid := openChatWS(t, c)
+
+	// 触发 → confirm 帧。reqs 是 []ui.ConfirmRequest（无 json tag，键为
+	// Go 字段名 ToolName/Summary/HighRisk/Hosts）。
+	c.json(t, http.MethodPost, "/api/chat", map[string]string{"text": "看磁盘", "session": sid})
+	cf := w.waitEvent(t, "confirm", 15*time.Second)
+	cid, _ := cf["id"].(string)
+	reqs, _ := cf["reqs"].([]any)
+	if cid == "" || len(reqs) == 0 {
+		t.Fatalf("confirm 帧 id=%q reqs=%v", cid, reqs)
+	}
+	req0, _ := reqs[0].(map[string]any)
+	if req0["ToolName"] != "execute_command" {
+		t.Fatalf("reqs[0].ToolName = %v; want execute_command", req0["ToolName"])
+	}
+	if !jsonStrings(req0["Hosts"])[target.Name] {
+		t.Fatalf("reqs[0].Hosts = %v; want 含 %s", req0["Hosts"], target.Name)
+	}
+
+	// REST 批准 → 终态顺序：confirm_done → tool_start → tool_result → done
+	c.json(t, http.MethodPost, "/api/confirm/"+cid, map[string]any{"approved": true, "session": sid})
+	if f := w.waitEvent(t, "confirm_done", 10*time.Second); f["id"] != cid {
+		t.Fatalf("confirm_done id = %v; want %s", f["id"], cid)
+	}
+	if ev := w.waitChatEvent(t, "tool_start", 10*time.Second); ev["id"] != "w03t1" {
+		t.Fatalf("tool_start id = %v; want w03t1", ev["id"])
+	}
+	ev := w.waitChatEvent(t, "tool_result", 30*time.Second)
+	if body, _ := ev["body"].(string); !strings.Contains(body, "Filesystem") {
+		t.Fatalf("tool_result body 未含 Filesystem（容器未真执行?）: %q", body)
+	}
+	if ev["ok"] != true {
+		t.Fatalf("tool_result ok = %v; want true", ev["ok"])
+	}
+	w.waitChatEvent(t, "done", 10*time.Second)
+
+	// 桩消费两回合：工具调用 + 工具结果回传后的收束文本
+	if n := stub.RequestCount(); n != 2 {
+		t.Fatalf("桩请求数 = %d; want 2（工具回合 + 收束文本回合）", n)
+	}
+
+	// 审计链（文件序）：chat_input → confirm_resolve → execute_command。
+	// done 帧收到时任务 goroutine 的 defer 已走完（busy 复位在 EmitDone
+	// 之前），全部条目已 fsync——此刻读取无竞态。
+	assertAuditChain(t, e2e.ReadAudit(t, dataDir), []auditStep{
+		{"chat_input", func(e audit.Entry) bool {
+			return e.Session == sid && strings.Contains(string(e.Input), "看磁盘")
+		}},
+		{"confirm_resolve", func(e audit.Entry) bool {
+			return e.Session == sid && e.Output == "decision=approve"
+		}},
+		{"execute_command", func(e audit.Entry) bool {
+			return e.Approved && !e.IsError && containsStr(e.Hosts, target.Name)
+		}},
+	})
+
+	// 第二轮：纯文本（桩第 3 回合）→ delta + done。会话未被废、单任务
+	// 锁已复位（否则会收到「单任务锁」error 帧而非 delta）。
+	c.json(t, http.MethodPost, "/api/chat", map[string]string{"text": "总结", "session": sid})
+	if ev := w.waitChatEvent(t, "delta", 10*time.Second); !strings.Contains(fmt.Sprint(ev["text"]), "总") {
+		t.Fatalf("delta text = %v; want 含 总", ev["text"])
+	}
+	w.waitChatEvent(t, "done", 10*time.Second)
+	if n := stub.RequestCount(); n != 3 {
+		t.Fatalf("第二轮后桩请求数 = %d; want 3", n)
+	}
+}
+
+// TestW04DisconnectCancel 断线自动取消 + since 重连重放：confirm 挂起时
+// 关 WS（服务端读循环感知断链 → unsubscribe → onIdle → CancelPendings）
+// → ws_auto_cancel 审计（cancelled=1）+ execute_command 落 "user rejected"
+// （agent 层通用拒绝，来源区分在 webapi）；重连同 session since=0 全量
+// 重放，confirm 与 confirm_done 都在且序号递增（先弹后收，终态正确）；
+// 重放收完后再发新消息正常 done（会话未被废）。
+func TestW04DisconnectCancel(t *testing.T) {
+	hs := e2e.StartHosts(t, 1) // Docker 缺失 → Skip（同 headless 档约定）
+	target := hs[0]
+
+	dataDir := t.TempDir()
+	stub := e2e.StartStubLLM(t, []e2e.Turn{
+		{ToolCalls: []e2e.ToolCall{{ID: "w04t1", Name: "execute_command", Input: map[string]any{
+			"command": "df -h; touch /tmp/gengar-w04", "hosts": []string{target.Name},
+		}}}},
+		{FinalText: "命令未获批准"},
+		{FinalText: "会话仍可用"},
+	})
+	p := startServer(t, dataDir, stub.URL(), "e2e-stub-key")
+	c := loginOK(t, p, adminUser, adminPass)
+	provisionExecHost(t, c, target)
+
+	w, sid := openChatWS(t, c)
+
+	c.json(t, http.MethodPost, "/api/chat", map[string]string{"text": "看磁盘", "session": sid})
+	cf := w.waitEvent(t, "confirm", 15*time.Second)
+	cid, _ := cf["id"].(string)
+	if cid == "" {
+		t.Fatalf("confirm 帧 id 为空: %v", cf)
+	}
+
+	// 断线：服务端读循环感知（TCP FIN 即时，但取消链与落盘都在服务端
+	// goroutine）→ 轮询审计至两信号齐备。
+	w.close()
+	entries := waitAuditEntries(t, dataDir, 10*time.Second, func(es []audit.Entry) bool {
+		var sawCancel, sawReject bool
+		for _, e := range es {
+			switch {
+			case e.Tool == "ws_auto_cancel" && e.Session == sid:
+				sawCancel = true
+			case e.Tool == "execute_command" && e.IsError && strings.Contains(e.Output, "user rejected"):
+				sawReject = true
+			}
+		}
+		return sawCancel && sawReject
+	})
+	var sawCancelDetail bool
+	for _, e := range entries {
+		if e.Tool == "ws_auto_cancel" {
+			if e.User != adminUser || e.Output != fmt.Sprintf("session=%s cancelled=1", sid) {
+				t.Fatalf("ws_auto_cancel = User=%q Session=%q Output=%q", e.User, e.Session, e.Output)
+			}
+			sawCancelDetail = true
+		}
+		if e.Tool == "execute_command" && e.IsError {
+			if e.Approved || !containsStr(e.Hosts, target.Name) {
+				t.Fatalf("拒绝的 execute_command = Approved=%v Hosts=%v; want 未批准且含 %s", e.Approved, e.Hosts, target.Name)
+			}
+		}
+	}
+	if !sawCancelDetail {
+		t.Fatalf("轮询命中后条目里无 ws_auto_cancel: %v", entries)
+	}
+
+	// 重连：同会话 since=0 全量重放。hello.session 一致（复活成新会话会
+	// 换 id——那正是要排除的）；重放里 confirm 与 confirm_done 都在，
+	// seq 递增（ConfirmBatch 先发布、CancelPendings 的 confirm_done 后发
+	// 布，缓冲序即因果序）；扫到旧 done 收齐（重放 + 实时流兜住尚未 flush
+	// 的收尾帧）。
+	w2 := dialChatWS(t, c, sid, 0)
+	h2 := w2.next(t, 10*time.Second)
+	if h2["t"] != "hello" || h2["session"] != sid {
+		t.Fatalf("重连 hello = %v; want session=%s", h2, sid)
+	}
+	if frameInt(h2, "next") == 0 {
+		t.Fatalf("重连 hello.next = 0; want >0（断线期间有帧入缓冲）: %v", h2)
+	}
+	var sawConfirm, sawConfirmDone, sawOldDone bool
+	var seqConfirm, seqConfirmDone int
+	collectDeadline := time.Now().Add(10 * time.Second)
+	for !(sawConfirm && sawConfirmDone && sawOldDone) {
+		f := w2.next(t, time.Until(collectDeadline))
+		switch f["t"] {
+		case "confirm":
+			if f["id"] == cid {
+				sawConfirm, seqConfirm = true, frameInt(f, "seq")
+			}
+		case "confirm_done":
+			if f["id"] == cid {
+				sawConfirmDone, seqConfirmDone = true, frameInt(f, "seq")
+			}
+		case "chat":
+			if ev, _ := f["ev"].(map[string]any); ev["type"] == "done" {
+				sawOldDone = true
+			}
+		}
+	}
+	if !sawConfirm || !sawConfirmDone {
+		t.Fatalf("重放缺帧: confirm=%v(seq=%d) confirm_done=%v(seq=%d)", sawConfirm, seqConfirm, sawConfirmDone, seqConfirmDone)
+	}
+	if seqConfirm >= seqConfirmDone {
+		t.Fatalf("重放序错乱: confirm seq=%d 应小于 confirm_done seq=%d", seqConfirm, seqConfirmDone)
+	}
+
+	// 会话未被废：旧 done 已消费（读位在实时尾），新消息 → delta + done
+	c.json(t, http.MethodPost, "/api/chat", map[string]string{"text": "会话还能用吗", "session": sid})
+	w2.waitChatEvent(t, "delta", 10*time.Second)
+	w2.waitChatEvent(t, "done", 10*time.Second)
+	if n := stub.RequestCount(); n != 3 {
+		t.Fatalf("桩请求数 = %d; want 3（工具回合 + 拒绝收束 + 新消息）", n)
 	}
 }

@@ -163,6 +163,33 @@ func (w *wsClient) waitEvent(t *testing.T, typ string, timeout time.Duration) ma
 	}
 }
 
+// waitChatEvent 跳读至 t="chat" 且 ev.type==evType 的帧，返回 ev 的 map
+// （键对照 hub.go chatEvent 的 json tag：type/id/text/display/body/ok…）。
+// tool_start/tool_result/done 等对话事件不是帧类型——它们都在 chat 帧内
+// （hub.publishChat 包一层 T:"chat"），waitEvent 够不到，必须按 ev.type
+// 匹配。timeout 是总预算；中途帧丢弃，已见帧型进超时报错辅助诊断。
+func (w *wsClient) waitChatEvent(t *testing.T, evType string, timeout time.Duration) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var seen []string
+	for {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			t.Fatalf("waitChatEvent(%s) 超时（%v），已见帧: %v", evType, timeout, seen)
+		}
+		f := w.next(t, remain)
+		if f["t"] != "chat" {
+			seen = append(seen, fmt.Sprint(f["t"]))
+			continue
+		}
+		ev, _ := f["ev"].(map[string]any)
+		if ev["type"] == evType {
+			return ev
+		}
+		seen = append(seen, "chat:"+fmt.Sprint(ev["type"]))
+	}
+}
+
 // close 关连接，幂等（t.Cleanup 挂过一次，用例内也可显式关——W04 的
 // 断线触发器就是它）；closed 通道供需要等关闭语义的用例 select。
 func (w *wsClient) close() {
