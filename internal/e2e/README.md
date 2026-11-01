@@ -40,7 +40,7 @@ go test -tags e2e ./internal/e2e/ -run 'TestE2ECases/E04' -v
 
 E03 说明：当前安全模型是两级（Safe/Risky），高危黑名单只给确认弹窗加注记、不做硬拒绝；`--yes` 下高危命令会被自动批准执行。因此 E03 关掉 `--yes` 走「人工确认拒绝」路径，断言落在 audit 的 `approved=false` 上；若未来恢复硬 Forbidden（sink 打印「禁止」），应把断言改回 `response_contains 禁止`。
 
-## 断言类型（八种）
+## 断言类型（九种，旧八种 + audit_field）
 
 `tool_called{tool,min_count}`、`tool_not_called{tool}`、`response_contains{matches}`、`response_not_contains{matches}`（stdout 正则）、`audit_hosts{tool,count}`（存在一条 Hosts 长度=count）、`audit_host_names{tool,names}`（存在一条 Hosts 集合==names，序无关）、`audit_rejected{tool}`（存在一条 approved=false）、`memory_contains{host,matches}`（`dataDir/memory/<host>.json` 内容正则命中）。断言是纯函数，表驱动单测见 `cases_test.go`；坏正则在 `loadCase` 加载期即失败。
 
