@@ -454,3 +454,127 @@ func TestW04DisconnectCancel(t *testing.T) {
 		t.Fatalf("桩请求数 = %d; want 3（工具回合 + 拒绝收束 + 新消息）", n)
 	}
 }
+
+// TestW05Isolation 多用户隔离全链路（Docker sshd×2）：admin 建两个普通
+// 用户 ua/ub → 各自经 REST 建主机 ha/hb → 视角隔离（列表只见自己的；
+// 他人主机 delete/test/term 一律 404 等价不存在且不留审计痕；scope 钉
+// 不住他人主机）→ admin 全见 → 删除 ub（名下主机移交 admin、其令牌即
+// 时吊销）→ 审计 User 戳的操作者归因链成立。单测级等价物见
+// internal/webapi/isolation_test.go——本用例的增量是真子进程 + 真审计
+// 链 + 端到端 REST/WS 多客户端并行会话。
+func TestW05Isolation(t *testing.T) {
+	hs := e2e.StartHosts(t, 2) // Docker 缺失 → Skip（同 headless 档约定）
+	hostA, hostB := hs[0], hs[1]
+
+	dataDir := t.TempDir()
+	stub := e2e.StartStubLLM(t, nil) // W05 不触发 LLM，空脚本兜底
+	p := startServer(t, dataDir, stub.URL(), "e2e-stub-key")
+
+	admin := loginOK(t, p, adminUser, adminPass)
+
+	// admin 建两个普通用户（POST /api/users 是 admined 端点；角色恒普通
+	// ——admin 只由种子产生）
+	const (
+		uaName, uaPass = "iso-ua", "iso-ua-pass"
+		ubName, ubPass = "iso-ub", "iso-ub-pass"
+	)
+	for _, u := range []struct{ name, pass string }{{uaName, uaPass}, {ubName, ubPass}} {
+		m := admin.json(t, http.MethodPost, "/api/users", map[string]string{"username": u.name, "password": u.pass})
+		if m["ok"] != true {
+			t.Fatalf("建用户 %s = %v; want ok", u.name, m)
+		}
+	}
+
+	// 两普通用户各自登录（独立 cookie jar——服务端按 token 区分会话）
+	ua := loginOK(t, p, uaName, uaPass)
+	ub := loginOK(t, p, ubName, ubPass)
+
+	// 各自建主机（provisionExecHost 的密码形态，指向各自的 Docker 容器）
+	const nameA, nameB = "iso-host-a", "iso-host-b"
+	idA := provisionExecHost(t, ua, nameA, hostA)
+	idB := provisionExecHost(t, ub, nameB, hostB)
+
+	// 可见性：普通用户只见自己的；admin 全见
+	if names := listHostNames(t, ua); !names[nameA] || names[nameB] {
+		t.Fatalf("ua 视角 = %v; want 含 %s 不含 %s", names, nameA, nameB)
+	}
+	if names := listHostNames(t, ub); !names[nameB] || names[nameA] {
+		t.Fatalf("ub 视角 = %v; want 含 %s 不含 %s", names, nameB, nameA)
+	}
+	if names := listHostNames(t, admin); !names[nameA] || !names[nameB] {
+		t.Fatalf("admin 视角 = %v; want 含 %s 与 %s", names, nameA, nameB)
+	}
+
+	// 404 等价不存在：ua 拿 hb 的真 id 做 delete/test/term 探测，一律 404
+	//（findHostFor 视角过滤先于一切业务与终端启用检查）
+	for _, probe := range []struct{ method, path string }{
+		{http.MethodDelete, "/api/hosts/" + idB},
+		{http.MethodPost, "/api/hosts/" + idB + "/test"},
+		{http.MethodPost, "/api/hosts/" + idB + "/term"},
+	} {
+		if resp, _ := ua.do(t, probe.method, probe.path, nil); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("ua %s %s = %d; want 404（他人主机等价不存在）", probe.method, probe.path, resp.StatusCode)
+		}
+	}
+
+	// scope：ua 开会话，试钉 [ha, hb]——hb 被视角过滤，回显（WS info 帧，
+	// handleSetScope 经 sink.Info 推送）只含 ha
+	w, sid := openChatWS(t, ua)
+	ua.json(t, http.MethodPut, "/api/chat/scope", map[string]any{
+		"session": sid, "hostIds": []string{idA, idB},
+	})
+	sc := w.waitChatEvent(t, "info", 10*time.Second)
+	if text, _ := sc["text"].(string); !strings.Contains(text, nameA) || strings.Contains(text, nameB) {
+		t.Fatalf("scope 回显 = %q; want 含 %s 不含 %s", text, nameA, nameB)
+	}
+
+	// 删除移交：admin 删 ub → hb 归 admin（admin 清单仍见，数据不丢）
+	admin.json(t, http.MethodDelete, "/api/users/"+ubName, nil)
+	if names := listHostNames(t, admin); !names[nameB] {
+		t.Fatalf("删 ub 后 admin 视角缺 %s（移交未兑现）: %v", nameB, names)
+	}
+	if names := listHostNames(t, ua); names[nameB] {
+		t.Fatalf("删 ub 后 ua 视角出现 %s: %v", nameB, names)
+	}
+	// ub 的既有令牌即时吊销（revokeUserTokens）
+	if resp, _ := ub.do(t, http.MethodGet, "/api/me", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("删 ub 后旧令牌 /api/me = %d; want 401", resp.StatusCode)
+	}
+
+	// 登录终态：ua 未被删再登录 200；ub 已删登录 401
+	if code := newAPIClient(p.baseURL).login(t, uaName, uaPass); code != http.StatusOK {
+		t.Fatalf("ua 再登录 = %d; want 200", code)
+	}
+	if code := newAPIClient(p.baseURL).login(t, ubName, ubPass); code != http.StatusUnauthorized {
+		t.Fatalf("ub（已删）登录 = %d; want 401", code)
+	}
+
+	// 审计（REST 处理器内同步落盘，响应 200 即已 fsync——直接读无竞态）：
+	// 操作链 user_create×2 → host_save×2 → user_delete 按因果序成立，User
+	// 戳各自归因（建用户/删用户是 admin 操作，建主机各自属主，user_delete
+	// 的 Output 锚移交量 hosts=1→admin）。
+	assertAuditChain(t, e2e.ReadAudit(t, dataDir), []auditStep{
+		{"user_create", func(e audit.Entry) bool {
+			return e.User == adminUser && e.Output == "user="+uaName
+		}},
+		{"user_create", func(e audit.Entry) bool {
+			return e.User == adminUser && e.Output == "user="+ubName
+		}},
+		{"host_save", func(e audit.Entry) bool {
+			return e.User == uaName && e.Output == "host="+nameA
+		}},
+		{"host_save", func(e audit.Entry) bool {
+			return e.User == ubName && e.Output == "host="+nameB
+		}},
+		{"user_delete", func(e audit.Entry) bool {
+			return e.User == adminUser && e.Output == "user="+ubName+" hosts=1→admin"
+		}},
+	})
+	// 探测不留痕：ua 对 hb 的三次 404 探测不得产生任何带 ua 戳的主机
+	// 操作审计（404 路径在业务前返回——探测面不放大）。
+	for _, e := range e2e.ReadAudit(t, dataDir) {
+		if (e.Tool == "host_delete" || e.Tool == "host_test" || e.Tool == "term_open") && e.User == uaName {
+			t.Errorf("ua 的 404 探测留了审计痕: %s User=%s Output=%q", e.Tool, e.User, e.Output)
+		}
+	}
+}
