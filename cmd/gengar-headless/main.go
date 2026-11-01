@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -149,6 +150,17 @@ func main() {
 				continue
 			}
 		}
+		// chat_input 审计：headless 无法复用 webapi 的 auditOp/truncAuditText
+		// （私有 helper），就地落一条（user 空、无会话对象——与设计 §3.4 的
+		// headless 约定一致）；原文 8K rune 截断防超长行灌爆分片。斜杠命令
+		// 在上方分支已 continue，不进本处（即不记为 chat_input）。
+		if auditLog != nil {
+			var in json.RawMessage
+			if b, err := json.Marshal(map[string]string{"text": truncAudit8K(line)}); err == nil {
+				in = b
+			}
+			_ = auditLog.Log(audit.Entry{TS: time.Now().Format(time.RFC3339), Tool: "chat_input", Input: in})
+		}
 		_ = a.ProcessInput(ctx, line)
 	}
 	// EOF 之外的读取失败（ErrTooLong 截断、IO 错误）必须非零退出，
@@ -157,4 +169,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "错误: 读取 stdin: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// truncAudit8K 审计原文截断：与 webapi.truncAuditText 同语义（8K rune
+// 上限，超限保留前缀并附省略号与显式省略字符数标注）。headless 无法
+// 复用 webapi 私有 helper，就地同款实现。
+func truncAudit8K(s string) string {
+	const max = 8 << 10
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return string(rs[:max]) + fmt.Sprintf("…[+%d chars]", len(rs)-max)
 }

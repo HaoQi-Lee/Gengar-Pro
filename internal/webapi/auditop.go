@@ -5,6 +5,7 @@ package webapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -50,4 +51,16 @@ func truncRunes(s string, n int) string {
 		return s
 	}
 	return string(rs[:n]) + "…"
+}
+
+// truncAuditText chat 原文入审计的截断：8KB（rune 数）上限，超限保留
+// 前缀并以「…[+N chars]」显式收尾——正文自然出现的省略号不足以辨认
+// 截断，N 为被省略的字符数（超限可辨识）。
+func truncAuditText(s string) string {
+	const max = 8 << 10
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return truncRunes(s, max) + fmt.Sprintf("[+%d chars]", len(rs)-max)
 }

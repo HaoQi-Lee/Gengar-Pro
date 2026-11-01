@@ -99,6 +99,11 @@ func (s *Server) handleSubmitChat(w http.ResponseWriter, r *http.Request, userna
 		if line == "" {
 			return
 		}
+		// chat_input 审计：非空提交即记（斜杠命令同样是用户输入），记
+		// 原始 req.Text 而非拼接目标前缀后的 line；8KB rune 截断带显式
+		// 省略标注（truncAuditText）。
+		s.auditOp(username, "chat_input", "session="+st.id,
+			map[string]string{"text": truncAuditText(req.Text)})
 		st.agentMu.Lock()
 		ag := st.agent
 		st.agentMu.Unlock()
@@ -151,6 +156,9 @@ func (s *Server) handleCancelChat(w http.ResponseWriter, r *http.Request, userna
 	st.taskMu.Unlock()
 	if cancel != nil {
 		cancel()
+		// task_cancel 仅记用户主动取消（无活动任务不记，避免噪音；断连
+		// 自动取消由 ws_auto_cancel 承载，见设计 §3.5）。
+		s.auditOp(username, "task_cancel", "session="+st.id, nil)
 	}
 	st.sink.CancelPendings()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

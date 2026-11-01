@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -425,6 +426,111 @@ func TestAskResolveViaREST(t *testing.T) {
 	}
 	if <-res != "nginx" {
 		t.Fatal("AskUser 应返回 nginx")
+	}
+}
+
+// TestChatInputAudit chat_input 审计：非空提交记原文（Tool/User/Output/
+// Input 四字段钉死），9K 长文截断为 8K rune 前缀 + 显式省略标注（rune 安全，
+// 多字节不切半），空文本不记。会话用白盒 chatOpen 建（POST 路由只查不建）；
+// 三次提交各用独立会话避开单任务锁的收尾竞态。Agent 未组装也可审计
+// （事件在 Agent 就绪检查之前）。
+func TestChatInputAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	ck := login(t, s, "alice", "pw1")
+	l := openTestAudit(t, s)
+	st1 := s.chatOpen("", "alice")
+	st2 := s.chatOpen("", "alice")
+	st3 := s.chatOpen("", "alice")
+
+	// 审计在任务 goroutine 内异步写：轮询等条目出现（最长 ~2s）
+	waitEntries := func(n int) []audit.Entry {
+		t.Helper()
+		for i := 0; i < 200; i++ {
+			if es := readAuditEntries(t, l); len(es) >= n {
+				return es
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return readAuditEntries(t, l)
+	}
+
+	// ① 普通文本 → chat_input：User=操作者、Output=session=<id>、Input 含原文
+	w, m := doJSON(t, s, "POST", "/api/chat", chatBody("帮我看看磁盘", st1.id), ck)
+	if w.Code != 200 {
+		t.Fatalf("chat = %d %v", w.Code, m)
+	}
+	es := waitEntries(1)
+	if len(es) != 1 || es[0].Tool != "chat_input" || es[0].User != "alice" {
+		t.Fatalf("chat_input 事件 = %+v", es)
+	}
+	if es[0].Output != "session="+st1.id {
+		t.Fatalf("chat_input Output = %q; want session=%s", es[0].Output, st1.id)
+	}
+	if in := string(es[0].Input); !strings.Contains(in, `"text":"帮我看看磁盘"`) {
+		t.Fatalf("chat_input Input = %s; want 含原文", in)
+	}
+
+	// ② 9K 中文长文 → 截断为 8192 rune 前缀 + …[+808 chars]（超限可辨识）
+	long := strings.Repeat("磁盘", 4500) // 9000 rune（27000 字节，验 rune 安全）
+	w, _ = doJSON(t, s, "POST", "/api/chat", chatBody(long, st2.id), ck)
+	if w.Code != 200 {
+		t.Fatalf("long chat = %d", w.Code)
+	}
+	es = waitEntries(2)
+	var in struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(es[1].Input, &in); err != nil {
+		t.Fatalf("chat_input Input 解析失败: %v (%s)", err, es[1].Input)
+	}
+	want := strings.Repeat("磁盘", 4096) + "…[+808 chars]" // 8192 rune 前缀 + 标注
+	if in.Text != want {
+		t.Fatalf("截断不符：len(rune)=%d 尾=%q", len([]rune(in.Text)), in.Text[len(in.Text)-40:])
+	}
+
+	// ③ 空白文本（TrimSpace 后空）→ 不记
+	w, _ = doJSON(t, s, "POST", "/api/chat", chatBody("   ", st3.id), ck)
+	if w.Code != 200 {
+		t.Fatalf("blank chat = %d", w.Code)
+	}
+	if es = readAuditEntries(t, l); len(es) != 2 {
+		t.Fatalf("空文本后条数 = %d; want 2（不记）", len(es))
+	}
+}
+
+// TestTaskCancelAudit task_cancel 审计：有活动任务（cancel 非 nil）记
+// session=；无活动任务不记（避免噪音）。busy/cancel 白盒置位——真实任务
+// 需 Claude API 单测不可达，置位两行即 handleSubmitChat 任务锁段的等价物。
+func TestTaskCancelAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	ck := login(t, s, "alice", "pw1")
+	l := openTestAudit(t, s)
+	st := s.chatOpen("", "alice")
+
+	// 无活动任务：cancel 不落条目
+	w, m := doJSON(t, s, "POST", "/api/chat/cancel", `{"session":"`+st.id+`"}`, ck)
+	if w.Code != 200 || m["ok"] != true {
+		t.Fatalf("cancel idle = %d %v", w.Code, m)
+	}
+	if es := readAuditEntries(t, l); len(es) != 0 {
+		t.Fatalf("无任务 cancel 条数 = %d; want 0", len(es))
+	}
+
+	// 白盒造活动任务（cancel 函数非 nil 即视为有任务）
+	_, cancelFn := context.WithCancel(context.Background())
+	defer cancelFn() // vet lostcancel：取消由 handler 触发，此兜底幂等无害
+	st.taskMu.Lock()
+	st.busy = true
+	st.cancel = cancelFn
+	st.taskMu.Unlock()
+
+	w, m = doJSON(t, s, "POST", "/api/chat/cancel", `{"session":"`+st.id+`"}`, ck)
+	if w.Code != 200 || m["ok"] != true {
+		t.Fatalf("cancel busy = %d %v", w.Code, m)
+	}
+	es := readAuditEntries(t, l)
+	if len(es) != 1 || es[0].Tool != "task_cancel" || es[0].User != "alice" || es[0].Output != "session="+st.id {
+		t.Fatalf("task_cancel 事件 = %+v", es)
 	}
 }
 
