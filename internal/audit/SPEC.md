@@ -39,6 +39,10 @@ package: internal/audit
 
 每条记录立即 `Flush` + `Sync` 落盘，不做缓冲批量写——审计流的价值在崩溃/断电后仍完整，吞吐不是目标。写失败累加计数并返回错误（调用方降级为日志事件），计数暴露到 health 端点。
 
+### 事件目录（2026-11-02 起）
+
+单一 JSONL 承载两类事件，Tool 字段即事件名：**agent 工具调用类**（任意插件工具名，五处落点见 agent 包：拒绝/分发失败/完成/ask_user×2）与 **webapi 合成类**（login_ok/login_fail/logout、host_save/host_delete/host_test、xshell_import_preview/xshell_import_commit、chat_input、task_cancel、confirm_resolve、ask_resolve、ws_auto_cancel、user_create/user_pw_reset/user_delete、settings_save、term_open/term_close）。会话内事件带结构化 Session 字段；webapi 侧 Session=会话 id（与 agent 条目的 `<时间戳>-chat-<id>` 为后缀关联），headless 侧为裸时间戳。**凭据红线**：私钥内容、密码、API Key 值绝不入条目（host_save 只落 key_uploaded 布尔，settings_save 只落变更字段名）。事件详情见 webapi 包 SPEC。
+
 ### 按天分片轮转（评审 ③-3）
 
 单文件无限增长的 audit.jsonl 在长期运行下既难检索也难清理。分片文件名 `audit-YYYY-MM-DD.jsonl` 字典序即时间序；跨天首写触发 `rotateLocked`（关旧开新 + `pruneLocked` 清理超 30 天分片）。历史固定名文件不再续写但保留（旧流水仍可读）。消费方（e2e harness、agent 测试）按 glob 分片读取，旧固定名兜底。

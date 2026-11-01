@@ -23,6 +23,7 @@ package: internal/webapi
 - `termws.go` — 终端端点：REST 开（按主机 GetOrCreate，属主校验前置——`findHostFor` 视角过滤，他人主机 404）/关 + WS 双向流（attach 先补发回放缓冲——open 与 attach 之间的输出不丢）；`termHub` 按 sessionID fan-out（多端附加同一 PTY）+ lastSeen 记录（reaper 据此回收无订阅 1 小时的 PTY）；`termConn` 接口（含 Replay，测试注入假实现）
 - `xshell.go` — XShell 上传导入：base64 文件列表 → `xshell.ParseFiles` 解析预览（判重 + 重名后缀，判重集合按导入者视角）→ 勾选提交（复用 saveHost 语义，归属导入者；首错中止）
 - `users.go` — 用户管理端点（仅 admin，`admined` 包裹 authed 再验角色）：列表/创建（固定普通角色）/重置密码/删除；删除先把名下主机移交 admin（`ReassignHosts`，失败中止可重试）；重置与删除即时吊销目标用户 token；删除顺带摘除其 appcore.Session 与全部对话会话（取消在跑任务）；操作记审计。`viewerOf` 视角辅助（username + isAdmin，各主机端点共用）
+- `auditop.go` — webapi 合成审计事件统一注入：`auditOpS(user, session, tool, output, input)`（`auditOp` 为其空 session 委托）+ `clientIP`（RemoteAddr 去端口）+ `truncRunes`/`truncAuditText`（rune 安全截断，8K 带 `[+N chars]` 标注）
 - `json.go` — `writeJSON`/`writeErr`/`readJSON`（1MB 请求上限）
 - `static.go` — `StaticHandler`：fs.FS 构建带 SPA fallback 的静态托管（未命中/目录落 index.html，防目录列表泄露）；hashed assets 设 `Cache-Control: immutable`（一年），HTML `no-cache`
 - `auth_test.go` / `hosts_test.go`（含设置端点）/ `users_test.go` / `chat_test.go` / `hub_test.go` / `termws_test.go` / `xshell_test.go` / `static_test.go` / `isolation_test.go`（主机按用户隔离端到端：列表/写操作/终端/导入判重/删除移交/scope） — 各端点单测（httptest + 假 termConn/fake core，无需真实 SSH）
@@ -122,3 +123,9 @@ package: internal/webapi
 ### 主机按用户隔离（视角模型）
 
 `hosts.owner` 列（空 = admin 归属）是隔离的唯一事实源：`viewerOf(username)` 每请求查一次库得到视角（owner + isAdmin），主机各端点经 `ListFor`/`findHostFor` 过滤——普通用户只见/只解析自己名下的主机，admin 全见可操作。属主校验失败统一 404「主机不存在」（编辑路径沿用 400「主机已被删除」文案），与 `chatForUser` 同语义防存在性探测。chatSession 在创建时快照视角（`viewAdmin`）并经 `NewSessionFor` 建按视角的 appcore.Session——Agent 的 CatalogText/Names/Resolve 只含该用户的主机。表级 UNIQUE 的主机名冲突转 400 可操作文案（视角内判重后缀之外的最后防线）。
+
+### 合成审计事件（2026-11-02 起）
+
+webapi 关键操作经 `auditOp`/`auditOpS`（auditop.go）落同一审计 JSONL，Tool 字段即事件名：`login_ok`/`login_fail`（含尝试名与来源 IP；限速 429 不记——未产生认证判定）/`logout`、`host_save`（input 仅元数据 + `key_uploaded` 布尔）/`host_delete`/`host_test`、`xshell_import_preview`/`xshell_import_commit`（部分失败记 `imported=<k>/failed_at=<名>` + 已入库名单）、`chat_input`（原文 8K rune 截断，任务 goroutine 内落——审计 fsync 成本移出 HTTP 响应路径）、`task_cancel`、`confirm_resolve`（仅 REST 决议成功；`decision=approve|deny`）、`ask_resolve`、`ws_auto_cancel`（仅 hub onIdle 路径且取消数 >0——与用户主动取消/task_cancel、确认拒绝/user rejected 可区分）、`user_create`/`user_pw_reset`/`user_delete`、`settings_save`（仅变更字段名清单）、`term_open`/`term_close`。
+
+约定：会话内事件带结构化 `Session`（=会话 id，与 agent 条目的 `<时间戳>-chat-<id>` 后缀关联；headless 为裸时间戳）；`Output` 为单行 grep 友好的键值串，结构化载荷进 `Input`；**凭据红线**——私钥内容/密码/API Key 值绝不入条目（反向断言 `assertAuditNoSecrets` 钉死）。`userSink.CancelPendings` 返回取消数供 onIdle 包装决定是否记 `ws_auto_cancel`（用户取消/删用户路径显式丢弃返回值，不产生该事件）。
