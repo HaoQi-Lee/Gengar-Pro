@@ -461,7 +461,7 @@ func TestW04DisconnectCancel(t *testing.T) {
 // 不住他人主机）→ admin 全见 → 删除 ub（名下主机移交 admin、其令牌即
 // 时吊销）→ 审计 User 戳的操作者归因链成立。单测级等价物见
 // internal/webapi/isolation_test.go——本用例的增量是真子进程 + 真审计
-// 链 + 端到端 REST/WS 多客户端并行会话。
+// 链 + 端到端 REST/WS 多客户端共存会话（顺序驱动、会话并存）。
 func TestW05Isolation(t *testing.T) {
 	hs := e2e.StartHosts(t, 2) // Docker 缺失 → Skip（同 headless 档约定）
 	hostA, hostB := hs[0], hs[1]

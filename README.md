@@ -431,7 +431,8 @@ gengar-pro/
 │   └── e2e/                        # E2E 测试框架（go:build e2e 隔离：桩 LLM + Docker sshd + headless 驱动）
 │       ├── e2e_test.go / cases.go / harness.go / sshd.go / stubllm.go
 │       ├── README.md               # E2E 运行说明
-│       └── testcases/              # YAML 测试用例（E01-E07 / R01）
+│       ├── testcases/              # YAML 测试用例（E01-E10 / R01）
+│       └── webapi/                 # webapi 档 E2E（gengar-server 真子进程 + HTTP/WS 客户端，W01-W05）
 ├── build/                          # 构建产物输出目录
 ├── go.mod / go.sum
 └── .psy/                           # psyduck 设计文档归档（按日期）

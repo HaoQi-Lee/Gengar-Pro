@@ -1,5 +1,7 @@
 //go:build e2e
 
+// helpers_test.go W 用例共用 helper：客户端引导（loginOK）/ 主机供给
+// （provisionExecHost）/ 帧解码与 WS 打开 / 审计链断言与轮询。
 package webapi
 
 import (

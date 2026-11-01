@@ -43,3 +43,26 @@ E03 说明：当前安全模型是两级（Safe/Risky），高危黑名单只给
 ## 断言类型（八种）
 
 `tool_called{tool,min_count}`、`tool_not_called{tool}`、`response_contains{matches}`、`response_not_contains{matches}`（stdout 正则）、`audit_hosts{tool,count}`（存在一条 Hosts 长度=count）、`audit_host_names{tool,names}`（存在一条 Hosts 集合==names，序无关）、`audit_rejected{tool}`（存在一条 approved=false）、`memory_contains{host,matches}`（`dataDir/memory/<host>.json` 内容正则命中）。断言是纯函数，表驱动单测见 `cases_test.go`；坏正则在 `loadCase` 加载期即失败。
+
+## 用例清单（2026-11 扩充后）
+
+E01-E07 不变（见上表）。新增：
+
+| 用例 | 场景 | 关键断言 |
+|---|---|---|
+| E08-redis-tools | redis 三工具链（容器内预装 redis + 6 键 dump） | `audit_field {tool: redis_rdb, output_re: 总键数 6}` |
+| E09-multi-turn-chain | 多轮工具链（runs:2，write→read 跨进程记忆链） | 顺序正则 + 缩进 JSON 形态锚点（防桩假绿） |
+| E10-error-path | hosts 引用不存在主机 | resolver 文案 + `audit_field is_error=true` |
+
+断言类型增至**九种**：新增 `audit_field{tool,user,session_re,output_re,input_re,is_error,count}`（字段级匹配；user/is_error/count 指针三态，count 缺省 >=1、显式 0=不得存在）。
+
+## webapi 档（internal/e2e/webapi/）
+
+驱动真实 `gengar-server` 子进程 + HTTP/WS 真客户端的 Web 层 E2E（W01 登录/限速、W02 主机 CRUD、W03 chat 确认流、W04 断线自动取消+重连续传、W05 多用户隔离；冒烟 TestServerSmoke 不需要 Docker）：
+
+```bash
+go test -tags e2e ./internal/e2e/webapi/ -v            # 全量
+go test -tags e2e ./internal/e2e/webapi/ -run W03 -v   # 单用例
+```
+
+详见 `internal/e2e/webapi/SPEC.md`。
