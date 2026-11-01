@@ -40,3 +40,14 @@ func clientIP(r *http.Request) string {
 	}
 	return r.RemoteAddr
 }
+
+// truncRunes 超长时按 rune 截断 s 至 n 字符并以省略号收尾（按 rune 截
+// 不切开多字节字符）。webapi 审计载荷/详情截断共用（原居 hosts.go，
+// chat 等处也要用故挪此统一）。
+func truncRunes(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n]) + "…"
+}

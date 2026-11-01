@@ -104,6 +104,7 @@ func (s *Server) handleXshellCommit(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	_, isAdmin := s.viewerOf(username)
+	saved := make([]string, 0, len(req.Hosts)) // 已成功入库的主机名（部分失败时的溯源清单）
 	for _, hr := range req.Hosts {
 		if _, err := s.saveHost(hr, username, isAdmin); err != nil {
 			var br *badReqError
@@ -112,9 +113,19 @@ func (s *Server) handleXshellCommit(w http.ResponseWriter, r *http.Request, user
 			} else {
 				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("导入 %s 失败: %s", hr.Name, err.Error()))
 			}
+			// 部分失败审计：已入库主机必须有痕迹——落汇总条目并带名单，
+			// Output 指明入库数与首个失败名；首台即失败（k=0）无任何
+			// 入库，不记（响应已报错，与全失败现状一致）。
+			if len(saved) > 0 {
+				s.auditOp(username, "xshell_import_commit",
+					fmt.Sprintf("imported=%d/failed_at=%s", len(saved), hr.Name),
+					map[string]any{"names": saved})
+			}
 			return
 		}
+		saved = append(saved, hr.Name)
 	}
-	s.auditOp(username, "xshell_import_commit", fmt.Sprintf("imported=%d hosts", len(req.Hosts)), nil)
+	s.auditOp(username, "xshell_import_commit", fmt.Sprintf("imported=%d hosts", len(req.Hosts)),
+		map[string]any{"names": saved})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

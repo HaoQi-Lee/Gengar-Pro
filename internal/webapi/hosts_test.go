@@ -524,8 +524,9 @@ func TestHostsAudit(t *testing.T) {
 	if del == nil || !strings.Contains(string(del.Input), `"name":"pwd1"`) || !strings.Contains(del.Output, "pwd1") {
 		t.Fatalf("host_delete 条目 = %+v", del)
 	}
-	if ht == nil || ht.Output == "" {
-		t.Fatalf("host_test 条目 = %+v（Output 须非空）", ht)
+	// Output 前缀锁格式：host=<名> <结果>（审查遗留 A4）
+	if ht == nil || !strings.HasPrefix(ht.Output, "host=tst ") {
+		t.Fatalf("host_test 条目 = %+v; want Output 前缀 \"host=tst \"", ht)
 	}
 
 	// 红线反向断言：密码/口令明文与私钥内容绝不出现在任何条目 Input/Output
@@ -539,12 +540,5 @@ func TestHostsAudit(t *testing.T) {
 	if pemMarker == "" {
 		t.Fatal("测试私钥无可用标记段")
 	}
-	for _, e := range es {
-		blob := e.Output + string(e.Input)
-		for _, mark := range []string{"pw-secret-1", "phrase-secret-1", pemMarker, keyB64[40:100]} {
-			if strings.Contains(blob, mark) {
-				t.Fatalf("审计条目泄凭据 %q: %+v", mark, e)
-			}
-		}
-	}
+	assertAuditNoSecrets(t, es, "pw-secret-1", "phrase-secret-1", pemMarker, keyB64[40:100])
 }

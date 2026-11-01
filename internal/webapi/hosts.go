@@ -316,7 +316,8 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request, username
 	if v := strings.TrimSpace(string(osInfo)); v != "" {
 		h.OS = v // 探测失败时保留清单里已有的 OS，不用空串覆盖
 	}
-	if s.findHostFor(id, username, isAdmin) != nil { // 探测窗口内被删：不回写（Save 会复活已删条目）
+	// 仅在仍存在时回写 OS——探测窗口内被删则跳过（Save 会复活已删条目）。
+	if s.findHostFor(id, username, isAdmin) != nil {
 		_ = s.core.Store().Save(h)
 	}
 	s.auditHostTest(username, h.Name, "")
@@ -332,16 +333,6 @@ func (s *Server) auditHostTest(username, name, failMsg string) {
 		detail = truncRunes(failMsg, 200)
 	}
 	s.auditOp(username, "host_test", "host="+name+" "+detail, nil)
-}
-
-// truncRunes 超长时按 rune 截断 s 至 n 字符并以省略号收尾（按 rune 截
-// 不切开多字节字符）。
-func truncRunes(s string, n int) string {
-	rs := []rune(s)
-	if len(rs) <= n {
-		return s
-	}
-	return string(rs[:n]) + "…"
 }
 
 // overlayStore 表单内测试的明文秘密覆盖层：Get 先查 plain（未保存的

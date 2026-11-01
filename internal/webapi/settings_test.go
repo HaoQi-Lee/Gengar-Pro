@@ -46,9 +46,5 @@ func TestSettingsSaveAuditFields(t *testing.T) {
 	}
 
 	// 红线反向断言：明文 key 不得出现在任何条目的 Input/Output 全文
-	for _, e := range es {
-		if strings.Contains(e.Output, "sk-testkey123") || strings.Contains(string(e.Input), "sk-testkey123") {
-			t.Fatalf("审计条目泄值: %+v", e)
-		}
-	}
+	assertAuditNoSecrets(t, es, "sk-testkey123")
 }

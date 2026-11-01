@@ -151,4 +151,52 @@ func TestXshellImportAudit(t *testing.T) {
 	if cm == nil || !strings.Contains(cm.Output, "imported=1") {
 		t.Fatalf("xshell_import_commit 条目 = %+v", cm)
 	}
+	// 全成功同样带 names 清单（可溯源到具体主机名）
+	if !strings.Contains(string(cm.Input), `"names":["a"]`) {
+		t.Fatalf("xshell_import_commit Input = %s; want names 含 a", cm.Input)
+	}
+}
+
+// TestXshellCommitPartialAudit 部分失败溯源（审查遗留 A1）：commit 首错
+// 中止后，已入库主机必须有审计痕迹——条目 Output=imported=<k>/failed_at=
+// <失败名>，Input.names 含已入库名单；首台即失败（k=0）无任何入库，
+// 不落条目（响应已报错，与现状一致）。
+func TestXshellCommitPartialAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	ck := login(t, s, "alice", "pw1")
+	l := openTestAudit(t, s)
+
+	// 第二台私钥 base64 非法 → 第一台入库后 400 中止
+	commit := `{"hosts":[` +
+		`{"name":"ok1","addr":"10.0.0.1","port":22,"user":"root","authMethod":"password"},` +
+		`{"name":"bad1","addr":"10.0.0.2","port":22,"user":"root","authMethod":"key","keyData":"!!!"}]}`
+	w, m := doJSON(t, s, "POST", "/api/xshell/commit", commit, ck)
+	if w.Code != 400 {
+		t.Fatalf("partial commit = %d %v; want 400", w.Code, m)
+	}
+	es := readAuditEntries(t, l)
+	if len(es) != 1 || es[0].Tool != "xshell_import_commit" {
+		t.Fatalf("部分失败条目 = %+v; want 1 条 xshell_import_commit", es)
+	}
+	if es[0].Output != "imported=1/failed_at=bad1" {
+		t.Fatalf("Output = %q; want imported=1/failed_at=bad1", es[0].Output)
+	}
+	if !strings.Contains(string(es[0].Input), `"names":["ok1"]`) {
+		t.Fatalf("Input = %s; want names 含 ok1（已落库的必须有痕迹）", es[0].Input)
+	}
+	// 条目没撒谎：第一台确已入库
+	_, m = doJSON(t, s, "GET", "/api/hosts", "", ck)
+	if n := len(m["hosts"].([]any)); n != 1 {
+		t.Fatalf("hosts = %d; want 1（第一台应已入库）", n)
+	}
+
+	// 首台即失败（k=0）：响应 400，不追加条目
+	w, _ = doJSON(t, s, "POST", "/api/xshell/commit",
+		`{"hosts":[{"name":"bad2","addr":"10.0.0.3","user":"root","authMethod":"key","keyData":"!!!"}]}`, ck)
+	if w.Code != 400 {
+		t.Fatalf("first-fail commit = %d; want 400", w.Code)
+	}
+	if es = readAuditEntries(t, l); len(es) != 1 {
+		t.Fatalf("首台失败后条数 = %d; want 1（无入库不记）", len(es))
+	}
 }

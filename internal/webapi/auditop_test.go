@@ -82,6 +82,40 @@ func TestAuditOpNilLogger(t *testing.T) {
 	s.auditOp("a", "b", "c", nil) // 不得 panic
 }
 
+// assertAuditNoSecrets 凭据红线反向断言（hosts/settings 等审计测试共用）：
+// 全部条目的 Input/Output 全文不得含 marks 中任一标记。
+func assertAuditNoSecrets(t *testing.T, es []audit.Entry, marks ...string) {
+	t.Helper()
+	for _, e := range es {
+		blob := e.Output + string(e.Input)
+		for _, mark := range marks {
+			if strings.Contains(blob, mark) {
+				t.Fatalf("审计条目泄凭据 %q: %+v", mark, e)
+			}
+		}
+	}
+}
+
+// TestTruncRunes 截断语义四情形：短串/恰好边界原样返回；超限按 rune
+// 截断（多字节不切半）并以省略号收尾。
+func TestTruncRunes(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"short", 10, "short"},    // 短串原样
+		{"abcde", 5, "abcde"},     // 恰好边界原样（不误加省略号）
+		{"abcdef", 5, "abcde…"},   // ASCII 超限：截断 + 省略号
+		{"中文按字截断不切半", 4, "中文按字…"}, // 多字节：截在字边界 + 省略号
+	}
+	for _, c := range cases {
+		if got := truncRunes(c.in, c.n); got != c.want {
+			t.Fatalf("truncRunes(%q, %d) = %q; want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
 func TestClientIP(t *testing.T) {
 	r := httptest.NewRequest("POST", "/api/login", nil)
 	cases := []struct{ remote, want string }{
