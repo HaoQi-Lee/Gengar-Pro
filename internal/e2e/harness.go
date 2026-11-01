@@ -34,9 +34,11 @@ type SeedHost struct {
 	Tags []string
 }
 
-// seedHosts 用 host.OpenStore（同模块直写）把主机写入 dataDir 的 gengar.db，
-// 与 headless 的 appcore.OpenAt 打开同一文件。须在启动 headless 前完成。
-func seedHosts(t *testing.T, dataDir string, hosts []SeedHost) {
+// SeedHosts 用 host.OpenStore（同模块直写）把主机写入 dataDir 的 gengar.db，
+// 与 headless/server 的 appcore.OpenAt 打开同一文件。须在启动被测进程前
+// 完成。（导出：internal/e2e/webapi 档的 W 用例预置主机复用，StartStubLLM
+// 先例。）
+func SeedHosts(t *testing.T, dataDir string, hosts []SeedHost) {
 	t.Helper()
 	store, err := host.OpenStore(filepath.Join(dataDir, "gengar.db"))
 	if err != nil {
@@ -153,9 +155,10 @@ func runHeadless(t *testing.T, dataDir, baseURL, apiKey string, inputs []string,
 	return out.String()
 }
 
-// readAudit 解析 dataDir 下的审计分片（轮转后为 audit-YYYY-MM-DD.jsonl；
+// ReadAudit 解析 dataDir 下的审计分片（轮转后为 audit-YYYY-MM-DD.jsonl；
 // 旧固定名 audit.jsonl 兼容读取）为 audit.Entry 列表（文件缺失 = 空）。
-func readAudit(t *testing.T, dataDir string) []audit.Entry {
+// （导出：webapi 档 W 用例的审计断言复用。）
+func ReadAudit(t *testing.T, dataDir string) []audit.Entry {
 	t.Helper()
 	var raw []byte
 	if shards, _ := filepath.Glob(filepath.Join(dataDir, "audit-*.jsonl")); len(shards) > 0 {
@@ -187,12 +190,24 @@ func readAudit(t *testing.T, dataDir string) []audit.Entry {
 	return entries
 }
 
-// repoRoot 返回仓库根（测试进程 cwd = internal/e2e）。
+// repoRoot 返回仓库根：从测试进程 cwd 逐级上翻找 go.mod。不能按包深
+// 度硬编码上翻层数——本包的夹具（StartHosts 等）被 internal/e2e/webapi
+// 档跨包复用，那边测试二进制的 cwd 深一级（internal/e2e/webapi），固定
+// 上翻两级会错位到不存在的 internal\internal。
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	root, err := filepath.Abs(filepath.Join(".", "..", ".."))
+	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return root
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("从 %s 上翻未找到 go.mod（仓库根定位失败）", dir)
+		}
+		dir = parent
+	}
 }

@@ -6,7 +6,8 @@
 // （子进程 + 真实端口，客户端是货真价实的 http.Client / websocket.Dialer）。
 //
 // 运行：go test -tags e2e ./internal/e2e/webapi/ -v
-// 前置：无 Docker 依赖（登录/冒烟不碰主机）；需 go toolchain 现场编译。
+// 前置：冒烟/W01 登录流不碰主机、无 Docker 依赖；W02 主机 CRUD 需 Docker
+// （缺失时统一 Skip）。需 go toolchain 现场编译。
 package webapi
 
 import (

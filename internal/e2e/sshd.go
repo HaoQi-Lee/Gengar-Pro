@@ -24,7 +24,7 @@ import (
 const (
 	e2eUser    = "root"
 	e2ePass    = "gengar-it-pass" // 与 internal/integration/sshd.Dockerfile 一致
-	e2ePassRef = "e2e-pass"       // --secrets 引用名（seedHosts 的 PasswordRef）
+	e2ePassRef = "e2e-pass"       // --secrets 引用名（SeedHosts 的 PasswordRef）
 )
 
 // HostSpec 描述一台就绪的 sshd 目标机。CID 是容器 ID（docker run 的
@@ -141,9 +141,10 @@ func runSSHd(t *testing.T, image string) (cid string, port int) {
 	return id, port
 }
 
-// startHosts 起 n 台独立 sshd 容器（e2e-host-1..n）：镜像只构建一次，
-// 循环内只做 run / port / dialReady，供 cases.go 的 hosts 字段驱动。
-func startHosts(t *testing.T, n int) []HostSpec {
+// StartHosts 起 n 台独立 sshd 容器（e2e-host-1..n）：镜像只构建一次，
+// 循环内只做 run / port / dialReady，供 cases.go 的 hosts 字段与 webapi
+// 档的 W 用例驱动。（导出：internal/e2e/webapi 复用，StartStubLLM 先例。）
+func StartHosts(t *testing.T, n int) []HostSpec {
 	t.Helper()
 	return startHostsWithImage(t, buildSSHdImage(t), n)
 }

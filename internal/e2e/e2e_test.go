@@ -75,7 +75,7 @@ func runCase(t *testing.T, c *e2eCase) {
 			startRedisHost(t, h)
 		}
 	} else {
-		hosts = startHosts(t, c.Hosts) // Docker 缺失 → 此处统一 Skip
+		hosts = StartHosts(t, c.Hosts) // Docker 缺失 → 此处统一 Skip
 	}
 
 	dataDir := t.TempDir()
@@ -83,7 +83,7 @@ func runCase(t *testing.T, c *e2eCase) {
 	for i, h := range hosts {
 		seed = append(seed, SeedHost{Name: h.Name, Addr: h.Addr, Port: h.Port, Tags: c.Tags[i]})
 	}
-	seedHosts(t, dataDir, seed)
+	SeedHosts(t, dataDir, seed)
 
 	autoYes := c.AutoYes == nil || *c.AutoYes
 	var stdout string
@@ -95,7 +95,7 @@ func runCase(t *testing.T, c *e2eCase) {
 		}
 		stdout += runHeadless(t, dataDir, baseURL, apiKey, r.Inputs, 5*time.Minute, autoYes)
 	}
-	entries := readAudit(t, dataDir)
+	entries := ReadAudit(t, dataDir)
 
 	for _, a := range c.Assertions {
 		if err := evalAssertion(a, stdout, entries, dataDir); err != nil {
