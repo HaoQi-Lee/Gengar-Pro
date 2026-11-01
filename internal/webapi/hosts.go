@@ -90,7 +90,7 @@ func (s *Server) handleGetHosts(w http.ResponseWriter, r *http.Request, username
 		out = append(out, hostView{
 			ID: h.ID, Name: h.Name, Addr: h.Addr, Port: h.Port, User: h.User,
 			Tags: h.Tags, OS: h.OS, Folder: h.Folder,
-			Status: s.getStatus(h.ID),
+			Status:     s.getStatus(h.ID),
 			AuthMethod: string(h.Auth.Method), KeyPath: h.Auth.KeyPath, PasswordRef: h.Auth.PasswordRef,
 		})
 	}

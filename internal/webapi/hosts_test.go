@@ -435,4 +435,3 @@ func TestHostDraft(t *testing.T) {
 		t.Fatal("draft test must not touch status without ID")
 	}
 }
-

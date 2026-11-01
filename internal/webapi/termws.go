@@ -85,7 +85,10 @@ func (h *termHub) unsubscribe(id string, ch chan termFrame) {
 func (h *termHub) reapIdle(mgr termConn) {
 	const idleAfter = time.Hour
 	h.mu.Lock()
-	type reap struct{ id string; last time.Time }
+	type reap struct {
+		id   string
+		last time.Time
+	}
 	var targets []reap
 	now := time.Now()
 	for id := range h.lastSeen {

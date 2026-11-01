@@ -449,4 +449,3 @@ func TestUserAuditLog(t *testing.T) {
 		t.Fatalf("audit missing user: %s", raw)
 	}
 }
-
