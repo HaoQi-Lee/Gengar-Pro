@@ -23,6 +23,17 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// loginOK 新建客户端并登录、断言 200（引导 admin 的常规路径）。错误
+// 密码 401 / 限速 429 是 W01 的断言对象——那条路径走裸 login 拿状态码。
+func loginOK(t *testing.T, p *serverProc, user, pass string) *apiClient {
+	t.Helper()
+	c := newAPIClient(p.baseURL)
+	if code := c.login(t, user, pass); code != http.StatusOK {
+		t.Fatalf("login %s = %d; want 200", user, code)
+	}
+	return c
+}
+
 // TestServerSmoke 冒烟：真实 gengar-server 子进程上走通 登录 → me
 // （首用户 admin 的角色提权由 ensureAdmin 兑现）→ 登出 → 401。桩 LLM
 // 用空脚本兜底（冒烟不触发对话，仅为 startServer 的 env 形位）。
@@ -31,10 +42,7 @@ func TestServerSmoke(t *testing.T) {
 	stub := e2e.StartStubLLM(t, nil)
 	p := startServer(t, dataDir, stub.URL(), "e2e-stub-key")
 
-	c := newAPIClient(p.baseURL)
-	if code := c.login(t, adminUser, adminPass); code != http.StatusOK {
-		t.Fatalf("login %s = %d; want 200", adminUser, code)
-	}
+	c := loginOK(t, p, adminUser, adminPass)
 	me := c.json(t, http.MethodGet, "/api/me", nil)
 	if me["username"] != adminUser || me["role"] != "admin" {
 		t.Fatalf("/api/me = %v; want username=admin role=admin", me)
@@ -51,10 +59,11 @@ func TestServerSmoke(t *testing.T) {
 // 指数限速 429、登出后 cookie 失效、审计三事件（login_ok / login_fail /
 // logout）、冷却到期后成功登录恢复 200。
 //
-// 限速语义（webapi/auth.go loginLimit）：每记一次失败置冷却
-// min(2s<<失败数, 30s)，冷却内的尝试直接 429——不跑 bcrypt、不延长冷却、
-// 不清计数；成功登录清零。断言锚语义不锚时序：429「出现即可」（首败后
-// 冷却 2s，本机往返远小于它，但第几次触发随 bcrypt 耗时浮动，循环兜住）；
+// 限速语义（webapi/auth.go loginLimit.fail）：每记一次失败（计数 +1 后）
+// 置冷却 min(1s<<失败数, 30s)——首败即 2s、其后 4s/8s… 翻倍；冷却内的
+// 尝试直接 429——不跑 bcrypt、不延长冷却、不清计数；成功登录清零。
+// 断言锚语义不锚时序：429「出现即可」（首败后冷却 2s，本机往返远小于
+// 它，但第几次触发随 bcrypt 耗时浮动，循环兜住）；
 // login_fail 凑下限 2 的第二次 401 用「轮询到冷却过期」保证确定性——
 // 429 不延长冷却，等待上界即冷却上限 30s。
 func TestW01Login(t *testing.T) {
@@ -63,10 +72,7 @@ func TestW01Login(t *testing.T) {
 	p := startServer(t, dataDir, stub.URL(), "e2e-stub-key")
 
 	// 正确密码 → 200 + me（admin 角色）
-	c := newAPIClient(p.baseURL)
-	if code := c.login(t, adminUser, adminPass); code != http.StatusOK {
-		t.Fatalf("正确密码登录 = %d; want 200", code)
-	}
+	c := loginOK(t, p, adminUser, adminPass)
 	me := c.json(t, http.MethodGet, "/api/me", nil)
 	if me["username"] != adminUser || me["role"] != "admin" {
 		t.Fatalf("/api/me = %v; want username=admin role=admin", me)
@@ -193,10 +199,7 @@ func TestW02HostCRUD(t *testing.T) {
 	stub := e2e.StartStubLLM(t, nil) // W02 不触发 LLM
 	p := startServer(t, dataDir, stub.URL(), "e2e-stub-key")
 
-	c := newAPIClient(p.baseURL)
-	if code := c.login(t, adminUser, adminPass); code != http.StatusOK {
-		t.Fatalf("login = %d; want 200", code)
-	}
+	c := loginOK(t, p, adminUser, adminPass)
 
 	const (
 		restName = "w02-rest-host"

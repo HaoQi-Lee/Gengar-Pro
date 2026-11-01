@@ -25,6 +25,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gengar-pro/internal/e2e"
 )
 
 // serverBin 构建缓存（进程级 sync.Once，同 buildHeadless 哲学）：全部
@@ -49,7 +51,7 @@ func buildServer(t *testing.T) string {
 		}
 		bin := filepath.Join(dir, "gengar-server.exe")
 		cmd := exec.Command("go", "build", "-o", bin, ".")
-		cmd.Dir = repoRoot(t)
+		cmd.Dir = e2e.RepoRoot(t)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			serverBuildErr = fmt.Errorf("build gengar-server: %v\n%s", err, out)
 			return
@@ -145,7 +147,7 @@ func runAddAdmin(t *testing.T, bin, dataDir string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "--data", dataDir, "--add-user", adminUser)
-	cmd.Dir = repoRoot(t)
+	cmd.Dir = e2e.RepoRoot(t)
 	cmd.Env = serverEnv("GENGAR_NEW_PASSWORD=" + adminPass)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -164,7 +166,7 @@ func launchServer(t *testing.T, bin, dataDir, stubURL, apiKey string, port int) 
 		done:    make(chan struct{}),
 	}
 	p.cmd = exec.Command(bin, "--data", dataDir, "--listen", fmt.Sprintf("127.0.0.1:%d", port))
-	p.cmd.Dir = repoRoot(t)
+	p.cmd.Dir = e2e.RepoRoot(t)
 	// env 语义同 runHeadless：先剔除继承的 ANTHROPIC_*/GENGAR_*（开发机
 	// 的真实 key/网关地址不能漏进用例），再注入套件自管变量——
 	// ANTHROPIC_BASE_URL/API_KEY 让 server 的 LLM 走桩（config 的 env 档
@@ -266,14 +268,4 @@ func freePort(t *testing.T) int {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
-}
-
-// repoRoot 返回仓库根（测试进程 cwd = internal/e2e/webapi，上翻三级）。
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	root, err := filepath.Abs(filepath.Join(".", "..", "..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return root
 }

@@ -77,7 +77,7 @@ func buildSSHdImage(t *testing.T) string {
 	t.Helper()
 	dockerCheck(t)
 	sshdImageOnce.Do(func() {
-		integrationDir, err := filepath.Abs(filepath.Join(repoRoot(t), "internal", "integration"))
+		integrationDir, err := filepath.Abs(filepath.Join(RepoRoot(t), "internal", "integration"))
 		if err != nil {
 			sshdImageErr = err
 			return

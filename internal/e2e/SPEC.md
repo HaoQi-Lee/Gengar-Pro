@@ -36,7 +36,7 @@ package: internal/e2e
 - `SeedHost{Name, Addr, Port, User, Tags}` / `seedHosts(t, dataDir, hosts)` — 播种主机清单到 `dataDir/gengar.db`（与 headless 的 `appcore.OpenAt` 同库）
 - `runHeadless(t, dataDir, baseURL, apiKey, inputs, timeout, autoYes) string` — 启动 headless 子进程跑完一轮输入（恒传 `--pin-all`——全部用例都在「默认目标 = 清单全集」下跑，E07 即测此语义），返回合并 stdout+stderr
 - `readAudit(t, dataDir) []audit.Entry` — 解析 `dataDir/audit.jsonl`（缺失 = 空）
-- `buildHeadless(t)` / `repoRoot(t)` — 编译缓存与仓库根定位
+- `buildHeadless(t)` / `RepoRoot(t)` — 编译缓存与仓库根定位
 
 ### 用例模型与断言（八种）
 

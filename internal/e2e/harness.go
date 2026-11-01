@@ -90,7 +90,7 @@ func buildHeadless(t *testing.T) string {
 		}
 		bin := filepath.Join(dir, "gengar-headless.exe")
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/gengar-headless")
-		cmd.Dir = repoRoot(t)
+		cmd.Dir = RepoRoot(t)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			headlessBuildErr = fmt.Errorf("build headless: %v\n%s", err, out)
 			return
@@ -127,7 +127,7 @@ func runHeadless(t *testing.T, dataDir, baseURL, apiKey string, inputs []string,
 		args = append(args, "--yes")
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = repoRoot(t)
+	cmd.Dir = RepoRoot(t)
 	// 先剔除继承的 ANTHROPIC_* 与 GENGAR_*（开发机的真实 key / 网关地址 /
 	// GENGAR_ENV 共识环境等不能漏进用例——用例行为只由下方显式注入决定），
 	// 再显式注入桩地址或空值（空 = config.Default 的官方 API）与套件自管
@@ -190,11 +190,12 @@ func ReadAudit(t *testing.T, dataDir string) []audit.Entry {
 	return entries
 }
 
-// repoRoot 返回仓库根：从测试进程 cwd 逐级上翻找 go.mod。不能按包深
+// RepoRoot 返回仓库根：从测试进程 cwd 逐级上翻找 go.mod。不能按包深
 // 度硬编码上翻层数——本包的夹具（StartHosts 等）被 internal/e2e/webapi
 // 档跨包复用，那边测试二进制的 cwd 深一级（internal/e2e/webapi），固定
-// 上翻两级会错位到不存在的 internal\internal。
-func repoRoot(t *testing.T) string {
+// 上翻两级会错位到不存在的 internal\internal。（导出：webapi 档的
+// serverproc 构建/起进程同用，替代其三级上翻的脆弱副本。）
+func RepoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
