@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 
@@ -36,10 +37,14 @@ type chatSession struct {
 }
 
 // newChatSession 装配 hub↔sink（onIdle：该会话浏览器全关 → 取消其待决议，
-// 阻塞在确认框的任务被放行）。接线须在 hub 可被其他 goroutine 访问前
-// 完成（见 newUserSink 的锁序说明）。视角（owner/isAdmin）在创建时快照
+// 阻塞在确认框的任务被放行；取消数 n>0 时经 onAutoCancel 报给调用方落
+// ws_auto_cancel 审计）。接线须在 hub 可被其他 goroutine 访问前完成
+// （见 newUserSink 的锁序说明）。视角（owner/isAdmin）在创建时快照
 // ——角色创建后不可变（ensureAdmin 只在种子时提权，Web 不改角色）。
-func newChatSession(core *appcore.Core, owner string, isAdmin bool) *chatSession {
+// onAutoCancel 闭包捕获本函数的 owner/id 局部量（会话标识在创建时已定，
+// 无需等 cs 装配完成），审计本身由调用方（Server）承载——本函数不依赖
+// Server，保持仅依赖 core 的可测性。
+func newChatSession(core *appcore.Core, owner string, isAdmin bool, onAutoCancel func(owner, sid string, n int)) *chatSession {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	id := hex.EncodeToString(b)
@@ -52,7 +57,11 @@ func newChatSession(core *appcore.Core, owner string, isAdmin bool) *chatSession
 		agentSID:   time.Now().Format("20060102-150405") + "-chat-" + id,
 		lastActive: time.Now(),
 	}
-	cs.sink = newUserSink(cs.hub)
+	cs.sink = newUserSink(cs.hub, func(n int) {
+		if onAutoCancel != nil {
+			onAutoCancel(owner, id, n)
+		}
+	})
 	return cs
 }
 
@@ -111,7 +120,13 @@ func (s *Server) chatOpen(id, owner string) *chatSession {
 		return cs
 	}
 	_, isAdmin := s.viewerOf(owner)
-	cs := newChatSession(s.core, owner, isAdmin)
+	cs := newChatSession(s.core, owner, isAdmin, func(owner, sid string, n int) {
+		// onIdle 路径独占 ws_auto_cancel（用户取消按钮走 task_cancel，设计
+		// §3.5）：回调只做审计——unsubscribe 在 hub 锁外调它，auditOp 只碰
+		// audit logger 自有锁，不回头取 chatsMu/taskMu/hub 锁，无锁序环。
+		s.auditOpS(owner, sid, "ws_auto_cancel",
+			fmt.Sprintf("session=%s cancelled=%d", sid, n), nil)
+	})
 	s.chats[cs.id] = cs
 	s.chatsMu.Unlock()
 	s.rebuildAgent(cs)

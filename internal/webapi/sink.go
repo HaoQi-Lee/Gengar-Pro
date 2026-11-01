@@ -27,9 +27,15 @@ type userSink struct {
 // newUserSink 创建 sink 并接线 hub 的 onIdle：订阅数 1→0（浏览器全关）
 // 时取消全部待决议。接线须在 hub 可被其他 goroutine 访问前完成——
 // unsubscribe 在锁内读 onIdle，构造后的无锁写会与其竞争。
-func newUserSink(h *hub) *userSink {
+// onAutoCancel 在实际取消了 n>0 个待决议时回调（ws_auto_cancel 审计；
+// 可为 nil——测试/无审计消费方不传，n=0 恒不回调）。
+func newUserSink(h *hub, onAutoCancel func(n int)) *userSink {
 	s := &userSink{hub: h, pendings: map[string]*pendingCh{}}
-	h.onIdle = s.CancelPendings
+	h.onIdle = func() {
+		if n := s.CancelPendings(); n > 0 && onAutoCancel != nil {
+			onAutoCancel(n)
+		}
+	}
 	return s
 }
 
@@ -155,7 +161,10 @@ func (s *userSink) ResolveAsk(id, answer string) bool {
 // 等）可能抢在 done 帧前入缓冲，重放序错乱（客户端先见任务收尾、后见
 // 确认框关闭）。阻塞发送安全：pm 锁认领互斥保证每通道恰一个发送者
 // （与 Resolve* 同理），接收方阻塞等待、缓冲 1 永不阻塞。
-func (s *userSink) CancelPendings() {
+// 返回实际取消的 pending 数——onIdle 包装据此决定是否落 ws_auto_cancel
+// 审计（n>0 才记）；用户取消按钮路径（handleCancelChat/dropUserSessions
+// 直调）丢弃返回值，那是 task_cancel 的职责，两路径不串扰（设计 §3.5）。
+func (s *userSink) CancelPendings() int {
 	s.pm.Lock()
 	ps := make([]*pendingCh, 0, len(s.pendings))
 	ids := make([]string, 0, len(s.pendings))
@@ -174,6 +183,7 @@ func (s *userSink) CancelPendings() {
 			p.chAnswer <- ""
 		}
 	}
+	return len(ps)
 }
 
 // 编译期断言：userSink 实现 ui.Sink。

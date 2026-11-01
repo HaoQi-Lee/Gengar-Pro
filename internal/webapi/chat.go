@@ -101,8 +101,9 @@ func (s *Server) handleSubmitChat(w http.ResponseWriter, r *http.Request, userna
 		}
 		// chat_input 审计：非空提交即记（斜杠命令同样是用户输入），记
 		// 原始 req.Text 而非拼接目标前缀后的 line；8KB rune 截断带显式
-		// 省略标注（truncAuditText）。
-		s.auditOp(username, "chat_input", "session="+st.id,
+		// 省略标注（truncAuditText）；Session 结构化回填（与会话内 agent
+		// 条目跨条目关联）。
+		s.auditOpS(username, st.id, "chat_input", "session="+st.id,
 			map[string]string{"text": truncAuditText(req.Text)})
 		st.agentMu.Lock()
 		ag := st.agent
@@ -160,7 +161,9 @@ func (s *Server) handleCancelChat(w http.ResponseWriter, r *http.Request, userna
 		// 自动取消由 ws_auto_cancel 承载，见设计 §3.5）。
 		s.auditOp(username, "task_cancel", "session="+st.id, nil)
 	}
-	st.sink.CancelPendings()
+	// 返回值（取消数）不消费：用户主动取消已由上面的 task_cancel 承载，
+	// ws_auto_cancel 只记断连自动取消（onIdle 路径，设计 §3.5 不串扰）。
+	_ = st.sink.CancelPendings()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -179,6 +182,17 @@ func (s *Server) handleResolveConfirm(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	ok := st.sink.ResolveConfirm(r.PathValue("id"), req.Approved)
+	if ok {
+		// confirm_resolve 决议审计：仅 REST 认领成功（真用户动作）时记——
+		// 重复决议（ok=false）不算；断连自动取消由 ws_auto_cancel 承载，
+		// agent 层 "user rejected" 保持通用（拒绝来源区分在 webapi，§3.5）。
+		decision := "deny"
+		if req.Approved {
+			decision = "approve"
+		}
+		s.auditOpS(username, st.id, "confirm_resolve", "decision="+decision,
+			map[string]string{"session": st.id, "confirm_id": r.PathValue("id")})
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": ok})
 }
 
@@ -197,6 +211,13 @@ func (s *Server) handleResolveAsk(w http.ResponseWriter, r *http.Request, userna
 		return
 	}
 	ok := st.sink.ResolveAsk(r.PathValue("id"), req.Answer)
+	if ok {
+		// ask_resolve 决议审计：answer 256 rune 截断入 Output（自由文本
+		// 防灌爆，答案通常短、超限即异常信号）；决议原文全文送达 sink，
+		// 截断只发生在审计侧。
+		s.auditOpS(username, st.id, "ask_resolve", "answer="+truncRunes(req.Answer, 256),
+			map[string]string{"session": st.id, "ask_id": r.PathValue("id")})
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": ok})
 }
 

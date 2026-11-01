@@ -469,6 +469,10 @@ func TestChatInputAudit(t *testing.T) {
 	if in := string(es[0].Input); !strings.Contains(in, `"text":"帮我看看磁盘"`) {
 		t.Fatalf("chat_input Input = %s; want 含原文", in)
 	}
+	// Session 结构化回补：与会话内 agent 条目跨条目关联（Task 5 回补断言）
+	if es[0].Session != st1.id {
+		t.Fatalf("chat_input Session = %q; want %s", es[0].Session, st1.id)
+	}
 
 	// ② 9K 中文长文 → 截断为 8192 rune 前缀 + …[+808 chars]（超限可辨识）
 	long := strings.Repeat("磁盘", 4500) // 9000 rune（27000 字节，验 rune 安全）
@@ -553,5 +557,179 @@ func TestUserAuditLog(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"user":"alice"`) {
 		t.Fatalf("audit missing user: %s", raw)
+	}
+}
+
+// recvFrameOf 收帧直到 T==want（跳过决议测试里上一步发布的 *_done 等
+// 无关帧），20 帧内未命中即失败。
+func recvFrameOf(t *testing.T, sub chan wsFrame, want string) wsFrame {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		if f := recvFrame(t, sub); f.T == want {
+			return f
+		}
+	}
+	t.Fatalf("20 帧内未等到 %s 帧", want)
+	return wsFrame{}
+}
+
+// TestConfirmResolveAudit confirm_resolve 决议审计（设计 §3.4/§3.5）：REST
+// 认领成功（ok=true）才记——decision=approve|deny、Input 带 session+
+// confirm_id、Session 结构化回填；重复决议（ok=false）不是用户动作不追加。
+// pending 用白盒 ConfirmBatch 制造（真实 Risky 链路需 Claude API 单测不可达，
+// 与 TestConfirmResolveViaREST 同手法）；审计在 handler 返回前同步落盘，
+// POST 返回即可直接读回。
+func TestConfirmResolveAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	ck := login(t, s, "alice", "pw1")
+	l := openTestAudit(t, s)
+	st := s.chatOpen("", "alice")
+	sub := st.hub.subscribe()
+	t.Cleanup(func() { st.hub.unsubscribe(sub) })
+
+	resolve := func(approved bool) string {
+		res := make(chan bool, 1)
+		go func() {
+			res <- st.sink.ConfirmBatch([]ui.ConfirmRequest{{ToolName: "shell", Summary: "rm x"}})
+		}()
+		f := recvFrameOf(t, sub, "confirm")
+		w, m := doJSON(t, s, "POST", "/api/confirm/"+f.ID,
+			fmt.Sprintf(`{"approved":%t,"session":"%s"}`, approved, st.id), ck)
+		if w.Code != 200 || m["ok"] != true {
+			t.Fatalf("resolve(%t) = %d %v", approved, w.Code, m)
+		}
+		if got := <-res; got != approved {
+			t.Fatalf("ConfirmBatch = %t; 与决议 %t 不一致", got, approved)
+		}
+		return f.ID
+	}
+	idApprove := resolve(true)
+	idDeny := resolve(false)
+
+	// 重复决议已认领过的 pid → ok=false，不追加条目
+	w, m := doJSON(t, s, "POST", "/api/confirm/"+idApprove,
+		`{"approved":true,"session":"`+st.id+`"}`, ck)
+	if w.Code != 200 || m["ok"] != false {
+		t.Fatalf("重复 resolve = %d %v; want ok=false", w.Code, m)
+	}
+
+	es := readAuditEntries(t, l)
+	if len(es) != 2 {
+		t.Fatalf("条数 = %d; want 2（重复决议不记）", len(es))
+	}
+	for i, want := range []struct{ decision, pid string }{{"approve", idApprove}, {"deny", idDeny}} {
+		e := es[i]
+		if e.Tool != "confirm_resolve" || e.User != "alice" {
+			t.Fatalf("es[%d] = %+v", i, e)
+		}
+		if e.Session != st.id {
+			t.Fatalf("es[%d].Session = %q; want %s", i, e.Session, st.id)
+		}
+		if e.Output != "decision="+want.decision {
+			t.Fatalf("es[%d].Output = %q; want decision=%s", i, e.Output, want.decision)
+		}
+		var in map[string]string
+		if err := json.Unmarshal(e.Input, &in); err != nil {
+			t.Fatalf("es[%d].Input 解析失败: %v (%s)", i, err, e.Input)
+		}
+		if in["session"] != st.id || in["confirm_id"] != want.pid {
+			t.Fatalf("es[%d].Input = %v; want session=%s confirm_id=%s", i, in, st.id, want.pid)
+		}
+	}
+}
+
+// TestAskResolveAudit ask_resolve 决议审计：answer 入 Output（256 rune 截断，
+// 自由文本防灌爆），Input 带 session+ask_id，Session 结构化回填；决议原文
+// 全文送达 AskUser（截断只发生在审计侧）。
+func TestAskResolveAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	ck := login(t, s, "alice", "pw1")
+	l := openTestAudit(t, s)
+	st := s.chatOpen("", "alice")
+	sub := st.hub.subscribe()
+	t.Cleanup(func() { st.hub.unsubscribe(sub) })
+
+	ask := func(answer string) string {
+		res := make(chan string, 1)
+		go func() {
+			ans, _ := st.sink.AskUser(json.RawMessage(`{"question":"装哪个","options":[{"label":"x"}]}`))
+			res <- ans
+		}()
+		f := recvFrameOf(t, sub, "ask")
+		body, _ := json.Marshal(map[string]string{"answer": answer, "session": st.id})
+		w, m := doJSON(t, s, "POST", "/api/ask/"+f.ID, string(body), ck)
+		if w.Code != 200 || m["ok"] != true {
+			t.Fatalf("ask resolve = %d %v", w.Code, m)
+		}
+		if got := <-res; got != answer {
+			t.Fatalf("AskUser 应收到未截断全文（len=%d）", len([]rune(got)))
+		}
+		return f.ID
+	}
+	idShort := ask("nginx")
+	long := strings.Repeat("好", 300) // 300 rune，超 256 截断档
+	idLong := ask(long)
+
+	es := readAuditEntries(t, l)
+	if len(es) != 2 {
+		t.Fatalf("条数 = %d; want 2", len(es))
+	}
+	for i, pid := range []string{idShort, idLong} {
+		e := es[i]
+		if e.Tool != "ask_resolve" || e.User != "alice" || e.Session != st.id {
+			t.Fatalf("es[%d] = %+v", i, e)
+		}
+		var in map[string]string
+		if err := json.Unmarshal(e.Input, &in); err != nil {
+			t.Fatalf("es[%d].Input 解析失败: %v (%s)", i, err, e.Input)
+		}
+		if in["session"] != st.id || in["ask_id"] != pid {
+			t.Fatalf("es[%d].Input = %v; want session=%s ask_id=%s", i, in, st.id, pid)
+		}
+	}
+	if es[0].Output != "answer=nginx" {
+		t.Fatalf("短答案 Output = %q; want answer=nginx", es[0].Output)
+	}
+	if want := "answer=" + strings.Repeat("好", 256) + "…"; es[1].Output != want {
+		t.Fatalf("长答案 Output 截断不符: 尾=%q", es[1].Output[len(es[1].Output)-20:])
+	}
+}
+
+// TestWSAutoCancelAudit ws_auto_cancel 审计（设计 §3.5 拒绝来源可区分）：
+// 浏览器全断开（订阅 1→0 的 onIdle 路径）取消待决议时记 session=<id>
+// cancelled=<n>；n=0 的 onIdle 不记。onIdle 用 subscribe→unsubscribe 归零
+// 触发（与真实断链同路径，TestHubIdleCallback 手法）；用户取消按钮路径
+// 不触发 onIdle（handleCancelChat 直调 CancelPendings），由 task_cancel
+// 承载——两路径不串扰。pending 用白盒 ConfirmBatch/AskUser 挂起。
+func TestWSAutoCancelAudit(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	l := openTestAudit(t, s)
+	st := s.chatOpen("", "alice")
+
+	// ① 无 pending 的 1→0：不落条目
+	ch := st.hub.subscribe()
+	st.hub.unsubscribe(ch)
+	if es := readAuditEntries(t, l); len(es) != 0 {
+		t.Fatalf("无 pending onIdle 条数 = %d; want 0", len(es))
+	}
+
+	// ② 挂 2 个 pending（confirm+ask）→ 1→0 → cancelled=2
+	sub := st.hub.subscribe()
+	go func() { _ = st.sink.ConfirmBatch([]ui.ConfirmRequest{{ToolName: "shell"}}) }()
+	recvFrameOf(t, sub, "confirm")
+	go func() { _, _ = st.sink.AskUser(json.RawMessage(`{"question":"q"}`)) }()
+	recvFrameOf(t, sub, "ask")
+	st.hub.unsubscribe(sub) // 1→0 → onIdle → CancelPendings(2) → ws_auto_cancel
+
+	es := readAuditEntries(t, l)
+	if len(es) != 1 {
+		t.Fatalf("条数 = %d; want 1", len(es))
+	}
+	e := es[0]
+	if e.Tool != "ws_auto_cancel" || e.User != "alice" || e.Session != st.id {
+		t.Fatalf("ws_auto_cancel = %+v", e)
+	}
+	if e.Output != fmt.Sprintf("session=%s cancelled=2", st.id) {
+		t.Fatalf("Output = %q; want session=%s cancelled=2", e.Output, st.id)
 	}
 }

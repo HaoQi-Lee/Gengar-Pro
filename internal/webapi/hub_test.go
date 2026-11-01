@@ -73,7 +73,7 @@ func TestHubIdleCallback(t *testing.T) {
 
 func TestSinkConfirmAskLifecycle(t *testing.T) {
 	h := newHub()
-	s := newUserSink(h)
+	s := newUserSink(h, nil)
 	sub := h.subscribe()
 
 	res := make(chan bool, 1)
@@ -152,7 +152,7 @@ func TestResolveCancelRace(t *testing.T) {
 	)
 	for iter := 0; iter < iters; iter++ {
 		h := newHub()
-		s := newUserSink(h)
+		s := newUserSink(h, nil)
 		sub := h.subscribe() // 挂着不退订：不触发 onIdle，取消只来自 racer
 
 		resConfirm := make(chan bool, 1)

@@ -13,9 +13,17 @@ import (
 	"gengar-pro/internal/audit"
 )
 
-// auditOp 记一条 webapi 合成事件。user=操作者，tool=事件名，
-// output=人读详情，input=结构化载荷（nil 则不记）。
+// auditOp 记一条无会话归属的合成事件（login_ok/settings_save 等）。
+// user=操作者，tool=事件名，output=人读详情，input=结构化载荷（nil 则
+// 不记）。会话内事件（需与该会话 agent 条目跨条目关联）走 auditOpS。
 func (s *Server) auditOp(user, tool, output string, input any) {
+	s.auditOpS(user, "", tool, output, input)
+}
+
+// auditOpS 同 auditOp 但带结构化 Session（决议/chat 类事件需与会话内
+// agent 条目跨条目关联；Session 为空串时与 auditOp 行为一致——Entry.
+// Session 无 omitempty，旧条目本就序列化为 "session":""）。
+func (s *Server) auditOpS(user, session, tool, output string, input any) {
 	if s.audit == nil {
 		return
 	}
@@ -26,11 +34,12 @@ func (s *Server) auditOp(user, tool, output string, input any) {
 		}
 	}
 	_ = s.audit.Log(audit.Entry{
-		TS:     time.Now().Format(time.RFC3339),
-		User:   user,
-		Tool:   tool,
-		Input:  in,
-		Output: output,
+		TS:      time.Now().Format(time.RFC3339),
+		Session: session,
+		User:    user,
+		Tool:    tool,
+		Input:   in,
+		Output:  output,
 	})
 }
 

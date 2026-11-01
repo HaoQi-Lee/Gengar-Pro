@@ -206,7 +206,9 @@ func (s *Server) dropUserSessions(username string) {
 		if cancel != nil {
 			cancel()
 		}
-		cs.sink.CancelPendings()
+		// 返回值（取消数）不消费：删用户路径直调，不触发 onIdle、不记
+		// ws_auto_cancel（该事件专属断连自动取消；用户删除另有 user_delete）。
+		_ = cs.sink.CancelPendings()
 	}
 }
 

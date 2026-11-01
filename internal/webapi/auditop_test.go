@@ -80,6 +80,34 @@ func TestAuditOp(t *testing.T) {
 func TestAuditOpNilLogger(t *testing.T) {
 	s := &Server{audit: nil}
 	s.auditOp("a", "b", "c", nil) // 不得 panic
+	s.auditOpS("a", "s1", "b", "c", nil)
+}
+
+// TestAuditOpS session 感知变体：Session 字段落盘、其余字段与 auditOp 同构；
+// auditOp 委托后 Session 为空串（与旧直接实现行为一致——Entry.Session 无
+// omitempty，旧条目本就序列化 "session":""）。
+func TestAuditOpS(t *testing.T) {
+	s := &Server{}
+	l := openTestAudit(t, s)
+
+	s.auditOpS("alice", "sess-1", "confirm_resolve", "decision=approve",
+		map[string]string{"session": "sess-1", "confirm_id": "p0"})
+	// auditOp 委托路径对照
+	s.auditOp("alice", "login_ok", "user=alice", nil)
+
+	es := readAuditEntries(t, l)
+	if len(es) != 2 {
+		t.Fatalf("条数 = %d; want 2", len(es))
+	}
+	if es[0].Session != "sess-1" || es[0].Tool != "confirm_resolve" || es[0].Output != "decision=approve" {
+		t.Fatalf("auditOpS 条目 = %+v", es[0])
+	}
+	if got := string(es[0].Input); got != `{"confirm_id":"p0","session":"sess-1"}` {
+		t.Fatalf("auditOpS Input = %s", got)
+	}
+	if es[1].Tool != "login_ok" || es[1].Session != "" {
+		t.Fatalf("auditOp 委托条目 = %+v; want Session 空", es[1])
+	}
 }
 
 // assertAuditNoSecrets 凭据红线反向断言（hosts/settings 等审计测试共用）：
