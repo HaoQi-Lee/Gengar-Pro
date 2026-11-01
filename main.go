@@ -118,7 +118,7 @@ func main() {
 	// 连通测试）否则会撞上已关闭的 SQLite/audit。非优雅路径已 Fatalf 退出，
 	// 必然收到 close（Shutdown 被 ctx 界定、Close 即时，goroutine 必终止）。
 	<-shutdownDone
-	stopBackground() // 停后台清扫（reaper/ sweeps）
+	stopBackground()     // 停后台清扫（reaper/ sweeps）
 	srv.CloseTerminals() // 先关全部 PTY，再收 audit/core
 	if auditLog != nil {
 		_ = auditLog.Close()

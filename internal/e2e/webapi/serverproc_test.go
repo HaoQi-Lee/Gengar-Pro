@@ -40,7 +40,7 @@ func TestWaitHealthTimeout(t *testing.T) {
 
 func TestWaitHealthEarlyExit(t *testing.T) {
 	p := &serverProc{baseURL: "http://127.0.0.1:1", done: make(chan struct{})}
-	p.out.WriteString("2026/11/01 log.Fatalf: 端口已被占用\n")
+	p.out.Write([]byte("2026/11/01 log.Fatalf: 端口已被占用\n"))
 	close(p.done) // Wait goroutine 的等价物：进程已退出
 	// 1 端口连不通，但早退分支必须先于 10s 超时立即触发。
 	err := p.waitHealth(10 * time.Second)

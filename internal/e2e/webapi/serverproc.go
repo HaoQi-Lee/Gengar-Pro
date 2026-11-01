@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -69,13 +70,38 @@ const (
 	adminPass = "e2e-admin-pass"
 )
 
+// lockedBuf 并发安全的输出缓冲。server 子进程的 stdout/stderr 由 exec
+// 内部的拷贝 goroutine 持续写入，而 waitHealth 的超时/早退路径在进程
+// 可能仍在写时就要读全部内容拼错误信息——bytes.Buffer 无锁，这个读写
+// 并发是数据竞争（Task 3 审查 Important）。锁的是正确性而非性能：诊断
+// 输出就几行，临界区开销无关紧要。写方（exec 拷贝 goroutine 的 Write）
+// 与读方（测试进程的 String）由同一把 mu 串行化；本机 -race 检测器全局
+// 损坏跑不了，正确性以本结构保证而非检测复核。
+type lockedBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// String 返回当前全部内容的快照（锁内拷出，与后续写入互不影响）。
+func (b *lockedBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // serverProc 运行中的 gengar-server 子进程。out 收 stdout+stderr，
 // 失败路径（health 超时/进程早退/用例失败）打印其内容诊断。
 type serverProc struct {
 	baseURL string // http://127.0.0.1:<port>
 	dataDir string
 	cmd     *exec.Cmd
-	out     bytes.Buffer
+	out     lockedBuf
 
 	done    chan struct{} // Wait goroutine 返回后关闭（进程存活探测）
 	waitErr error         // cmd.Wait 的返回值（done 关闭后才可读）
@@ -94,7 +120,8 @@ func startServer(t *testing.T, dataDir, stubURL, apiKey string) *serverProc {
 	t.Helper()
 	bin := buildServer(t)
 	runAddAdmin(t, bin, dataDir)
-	for attempt := 0; ; attempt++ {
+	var errs []error
+	for attempt := 1; ; attempt++ {
 		p := launchServer(t, bin, dataDir, stubURL, apiKey, freePort(t))
 		err := p.waitHealth(10 * time.Second)
 		if err == nil {
@@ -102,8 +129,11 @@ func startServer(t *testing.T, dataDir, stubURL, apiKey string) *serverProc {
 			return p
 		}
 		p.stop(t) // 回收这次尝试（可能已退出；stop 幂等）
-		if attempt > 0 {
-			t.Fatalf("gengar-server 两次启动均失败: %v", err)
+		// 两次尝试的错误都留下：只报最后一次会吞掉首因——首次失败往往
+		// 才是环境问题的原始信号，别让第二次的端口竞态报错掩盖它。
+		errs = append(errs, fmt.Errorf("尝试%d: %w", attempt, err))
+		if attempt >= 2 {
+			t.Fatalf("gengar-server 两次启动均失败:\n%v", errors.Join(errs...))
 		}
 	}
 }
