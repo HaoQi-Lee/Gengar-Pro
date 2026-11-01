@@ -90,7 +90,7 @@ func runCase(t *testing.T, c *e2eCase) {
 	for _, r := range c.Runs {
 		baseURL := ""
 		if c.LLM == "stub" {
-			stub := startStubLLM(t, scriptToTurns(r.Script))
+			stub := StartStubLLM(t, scriptToTurns(r.Script))
 			baseURL = stub.URL()
 		}
 		stdout += runHeadless(t, dataDir, baseURL, apiKey, r.Inputs, 5*time.Minute, autoYes)

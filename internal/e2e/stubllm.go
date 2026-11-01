@@ -60,8 +60,10 @@ type ToolCall struct {
 // 在 E2E 下被真实走到。
 const deltaChunk = 8
 
-// startStubLLM 启动桩并注册 t.Cleanup 关闭。
-func startStubLLM(t *testing.T, script []Turn) *StubLLM {
+// StartStubLLM 启动桩并注册 t.Cleanup 关闭。（导出：internal/e2e/webapi
+// 档驱动 gengar-server 子进程时复用同一桩——Turn/StubLLM 本就导出，
+// 构造器跟齐。）
+func StartStubLLM(t *testing.T, script []Turn) *StubLLM {
 	t.Helper()
 	s := &StubLLM{script: script}
 	mux := http.NewServeMux()

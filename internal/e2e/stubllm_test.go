@@ -38,7 +38,7 @@ func streamOnce(t *testing.T, client *claude.Client, msgs []claude.Message) []cl
 // 以及桩侧请求体录制（第二请求必须带回工具结果）。
 func TestStubLLMDrivesRealClient(t *testing.T) {
 	toolInput := map[string]any{"command": "echo hi", "hosts": []string{"all"}}
-	stub := startStubLLM(t, []Turn{
+	stub := StartStubLLM(t, []Turn{
 		{ToolCalls: []ToolCall{{ID: "t1", Name: "execute_command", Input: toolInput}}},
 		{FinalText: "两台主机执行完成 hi"},
 	})
@@ -157,7 +157,7 @@ func TestStubLLMDrivesRealClient(t *testing.T) {
 // 形态）必须原样出现在 message_delta：文本块照发、停机原因非 end_turn。
 // E06 依赖此形态复刻「报告被上限掐断」的异常收束。
 func TestStubLLMStopReasonOverride(t *testing.T) {
-	stub := startStubLLM(t, []Turn{
+	stub := StartStubLLM(t, []Turn{
 		{FinalText: "半份报告", StopReason: "max_tokens"},
 	})
 	client := claude.NewClient(claude.ClientConfig{
@@ -186,7 +186,7 @@ func TestStubLLMStopReasonOverride(t *testing.T) {
 // stream_test.go sampleSSE 的帧形态（结构逐字节兼容：event:/data: 前缀、
 // JSON 键序、input_json_delta 分片、stop_reason 位置）。
 func TestStubLLMFrameShapesTextual(t *testing.T) {
-	stub := startStubLLM(t, []Turn{
+	stub := StartStubLLM(t, []Turn{
 		{ToolCalls: []ToolCall{{ID: "t1", Name: "check_port", Input: map[string]any{"port": 80}}}},
 	})
 	req, err := http.NewRequest(http.MethodPost, stub.URL()+"/v1/messages",
@@ -229,7 +229,7 @@ func TestStubLLMFrameShapesTextual(t *testing.T) {
 
 // TestStubLLMRejectsNonMessages —— 桩只服务 POST /v1/messages。
 func TestStubLLMRejectsNonMessages(t *testing.T) {
-	stub := startStubLLM(t, []Turn{{FinalText: "x"}})
+	stub := StartStubLLM(t, []Turn{{FinalText: "x"}})
 	resp, err := http.Get(stub.URL() + "/v1/messages")
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -251,7 +251,7 @@ func TestStubLLMRejectsNonMessages(t *testing.T) {
 // TestStubLLMScriptExhausted —— 脚本耗尽后按协议 error 事件报错（客户端
 // 收到 EventError），而非静默空响应。
 func TestStubLLMScriptExhausted(t *testing.T) {
-	stub := startStubLLM(t, []Turn{{FinalText: "one"}})
+	stub := StartStubLLM(t, []Turn{{FinalText: "one"}})
 	client := claude.NewClient(claude.ClientConfig{BaseURL: stub.URL(), APIKey: "e2e-key", Model: "stub-model"})
 	msgs := []claude.Message{{Role: "user", Content: "q"}}
 
