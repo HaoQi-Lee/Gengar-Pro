@@ -17,16 +17,22 @@ func newTestServer(t *testing.T, users map[string]string) *Server {
 	return newTestServerAt(t, users, host.MemoryStore{})
 }
 
+// doJSON 发 JSON 请求（httptest 默认 RemoteAddr）并把响应体解析为 map。
 func doJSON(t *testing.T, s *Server, method, path, body, cookie string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
-	var rdr *strings.Reader
-	if body == "" {
-		rdr = strings.NewReader("")
-	} else {
-		rdr = strings.NewReader(body)
-	}
-	req := httptest.NewRequest(method, path, rdr)
+	return doJSONFromIP(t, s, method, path, body, cookie, "")
+}
+
+// doJSONFromIP 同 doJSON，但可显式指定 RemoteAddr（clientIP 审计断言
+// 需要确定的来源 IP）；remoteAddr 为空不覆盖、保持默认。包内通用请求
+// 辅助（不限于认证测试），与 doJSON 共用这一处实现。
+func doJSONFromIP(t *testing.T, s *Server, method, path, body, cookie, remoteAddr string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
 	if cookie != "" {
 		req.Header.Set("Cookie", cookie)
 	}
@@ -135,7 +141,7 @@ func TestLoginAuditEvents(t *testing.T) {
 	const ip = "203.0.113.7:5555" // TEST-NET-3，避免依赖 httptest 默认值
 
 	// ① 正确凭据 → 200 + 1 条 login_ok
-	w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"pw1"}`, "", ip)
+	w, _ := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"pw1"}`, "", ip)
 	if w.Code != http.StatusOK {
 		t.Fatalf("login ok = %d; want 200", w.Code)
 	}
@@ -158,7 +164,7 @@ func TestLoginAuditEvents(t *testing.T) {
 	}
 
 	// ③ 错密码 → 401 + 1 条 login_fail：未认证 User 空，尝试名在 Output
-	if w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"bad"}`, "", ip); w.Code != http.StatusUnauthorized {
+	if w, _ := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"bad"}`, "", ip); w.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong password = %d; want 401", w.Code)
 	}
 	es = readAuditEntries(t, l)
@@ -170,7 +176,7 @@ func TestLoginAuditEvents(t *testing.T) {
 	}
 
 	// ④ 不存在的用户名 → 同样 1 条 login_fail（Output 带尝试名）
-	if w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"ghost","password":"bad"}`, "", ip); w.Code != http.StatusUnauthorized {
+	if w, _ := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"ghost","password":"bad"}`, "", ip); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no such user = %d; want 401", w.Code)
 	}
 	es = readAuditEntries(t, l)
@@ -178,8 +184,12 @@ func TestLoginAuditEvents(t *testing.T) {
 		t.Fatalf("login_fail(无此用户) = %+v", es)
 	}
 
-	// ⑤ 限速 429：alice ③ 中已失败一次（冷却 2s），立刻再试被拒 → 无新条目
-	if w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"pw1"}`, "", ip); w.Code != http.StatusTooManyRequests {
+	// ⑤ 限速 429：不依赖 ③ 挂钟冷却（跑慢 2s 冷却即过期、断言翻车），
+	// 照 TestLoginRateLimit 手法直接预填 nextTry 制造确定性窗口 → 无新条目
+	s.loginLim.mu.Lock()
+	s.loginLim.nextTry["alice"] = time.Now().Add(time.Minute)
+	s.loginLim.mu.Unlock()
+	if w, _ := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"pw1"}`, "", ip); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("rate limited = %d; want 429", w.Code)
 	}
 	if es = readAuditEntries(t, l); len(es) != 4 {

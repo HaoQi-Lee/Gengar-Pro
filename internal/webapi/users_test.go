@@ -102,6 +102,27 @@ func TestCreateUserValidation(t *testing.T) {
 	}
 }
 
+// TestCreateUserAuditOperator user_create 审计必须带操作者：admined 已
+// 注入 username，但 handler 曾用 _ 丢弃，落审计时 User 恒空，无法追溯
+// 是谁建的账号。登录成功后再开审计，只断言 user_create 这一条。
+func TestCreateUserAuditOperator(t *testing.T) {
+	s := newAdminServer(t)
+	ck := login(t, s, "admin", "adminpw")
+	l := openTestAudit(t, s)
+
+	w, _ := doJSON(t, s, "POST", "/api/users", `{"username":"bob","password":"bobpw123"}`, ck)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create = %d; want 200", w.Code)
+	}
+	es := readAuditEntries(t, l)
+	if len(es) != 1 {
+		t.Fatalf("条数 = %d; want 1", len(es))
+	}
+	if e := es[0]; e.Tool != "user_create" || e.User != "admin" || e.Output != "user=bob" {
+		t.Fatalf("user_create 事件 = %+v; want tool=user_create user=admin output=user=bob", e)
+	}
+}
+
 func TestDeleteGuards(t *testing.T) {
 	s := newAdminServer(t)
 	ck := login(t, s, "admin", "adminpw")

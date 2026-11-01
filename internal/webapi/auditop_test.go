@@ -45,21 +45,6 @@ func readAuditEntries(t *testing.T, l *audit.Logger) []audit.Entry {
 	return es
 }
 
-// doJSONFromIP 同 doJSON，但显式指定 RemoteAddr（clientIP 断言需要确定
-// 的来源 IP，不依赖 httptest 默认值）。
-func doJSONFromIP(t *testing.T, s *Server, method, path, body, cookie, remoteAddr string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = remoteAddr
-	if cookie != "" {
-		req.Header.Set("Cookie", cookie)
-	}
-	w := httptest.NewRecorder()
-	s.mux.ServeHTTP(w, req)
-	return w
-}
-
 func TestAuditOp(t *testing.T) {
 	s := &Server{}
 	l := openTestAudit(t, s)

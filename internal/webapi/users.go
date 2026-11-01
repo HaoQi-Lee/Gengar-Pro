@@ -12,7 +12,6 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"gengar-pro/internal/audit"
 	"gengar-pro/internal/host"
 )
 
@@ -53,7 +52,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request, _ strin
 	writeJSON(w, http.StatusOK, map[string]any{"users": views})
 }
 
-func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, _ string) {
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, operator string) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -91,7 +90,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request, _ stri
 		writeErr(w, http.StatusInternalServerError, "创建用户失败")
 		return
 	}
-	s.logUserOp("", "user_create", name)
+	s.logUserOp(operator, "user_create", name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -212,15 +211,10 @@ func (s *Server) dropUserSessions(username string) {
 }
 
 // logUserOp 记用户管理审计：目标用户名放 Output（"user=<name>"，与
-// logTerm 的 session=<id> 同一处理思路），Hosts 留空。
+// logTerm 的 session=<id> 同一处理思路），Hosts 留空。统一委托 auditOp
+// （nil logger 防护与 TS 填充不再各处手写）。
 func (s *Server) logUserOp(operator, tool, target string) {
-	if s.audit == nil {
-		return
-	}
-	_ = s.audit.Log(audit.Entry{
-		TS: time.Now().Format(time.RFC3339), User: operator,
-		Tool: tool, Output: "user=" + target,
-	})
+	s.auditOp(operator, tool, "user="+target, nil)
 }
 
 // viewerOf 返回该用户名的视角（属主名 + 是否 admin）。查库一次——与

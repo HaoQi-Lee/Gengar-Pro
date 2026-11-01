@@ -4,9 +4,6 @@ package webapi
 import (
 	"net/http"
 	"strings"
-	"time"
-
-	"gengar-pro/internal/audit"
 )
 
 type settingsView struct {
@@ -35,6 +32,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	secrets := s.core.Secrets()
+	// changed 只收成功落库的字段名（在 rollback append 旁成对维护）；
+	// 审计只报名清单，绝不报值——api_key 是凭据。
+	changed := []string{}
 	rollback := []func(){}
 	s.cfgMu.Lock()
 	fail := func(err error) {
@@ -51,6 +51,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request, user
 			return
 		}
 		rollback = append(rollback, func() { s.cfg.APIKey = old })
+		changed = append(changed, "api_key")
 		s.cfg.APIKey = v.APIKey
 	}
 	if v.BaseURL != "" && v.BaseURL != s.cfg.APIBaseURL {
@@ -60,6 +61,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request, user
 			return
 		}
 		rollback = append(rollback, func() { s.cfg.APIBaseURL = old })
+		changed = append(changed, "base_url")
 		s.cfg.APIBaseURL = v.BaseURL
 	}
 	if v.Model != "" && v.Model != s.cfg.Model {
@@ -69,14 +71,12 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request, user
 			return
 		}
 		rollback = append(rollback, func() { s.cfg.Model = old })
+		changed = append(changed, "model")
 		s.cfg.Model = v.Model
 	}
 	s.cfgMu.Unlock()
 	s.rebuildAllAgents() // cfgMu 释放后锁外重建（锁序见 rebuildAgent）
-	if s.audit != nil {
-		_ = s.audit.Log(audit.Entry{TS: time.Now().Format(time.RFC3339), User: username,
-			Tool: "settings_save", Hosts: []string{}})
-	}
+	s.auditOp(username, "settings_save", "fields="+strings.Join(changed, ","), nil)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
