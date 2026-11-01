@@ -19,7 +19,7 @@ package: internal/rdbparser
 - `aggregate.go` / `aggregate_test.go` — 聚合层：`Report`/`PrefixOf`/aggregator（纯内存累计 + 排序截断 TopN + 冻结防护）
 - `render.go` / `render_test.go` — 渲染层：`Render` 九节文本报告 + `HumanBytes`
 - `analyze_test.go` — 端到端：真实 dump 夹具断言 + 缺文件/垃圾输入错误路径
-- `testdata/` — 离线生成的真实 dump 夹具（redis 3.2 已入库；5/6.2/7.2 待 Docker 可用后补齐，测试按文件存在性显式 SKIP，断言不放宽）
+- `testdata/` — 离线生成的真实 dump 夹具（redis 3.2/5/6.2/7.2 四版本齐备且全绿）
 - `rdb/` — vendored dongmx/rdb（decoder.go、slice_buffer.go、crc64/、nopdecoder/、LICENCE）：RDB 二进制格式解析核心，支持 listpack/stream/module
 - `errors/errors.go` — juju/errors 兼容 shim（New/Errorf/Trace/Wrap，stdlib 实现，%w 保留 cause），保住 vendored 调用点与上游逐字节一致
 - `LICENSE` — rdr 的 Apache-2.0（覆盖 memprofiler.go 与 decoder.go 移植）
@@ -61,6 +61,6 @@ package: internal/rdbparser
 
 聚合与渲染的所有排序都是全序：主指标降序 + 唯一字符串字典序 tiebreak（前缀名/键名/类型名），map 迭代随机性不漏进结果，测试不抖动。aggregator `finish` 后再 `add` 会 panic（冻结防护，防共享指针静默改坏已返回的 Report）。
 
-### 夹具矩阵现状（2026-10-31）
+### 夹具矩阵与 Redis 7 支持（2026-11-01）
 
-`testdata/` 持有离线生成的真实 dump（生成脚本与分析同源断言：6 键、TTL 5/1、五类型）。redis 3.2（本机 3.2.100 生成）已入库且全绿；5/6.2/7.2 因开发机 Docker Desktop 服务条款未接受而未生成，对应子测试按文件存在性显式 SKIP（断言原文保留，夹具入库后零改动解除）。3.2 的多字段 hash 需 `HMSET`（HSET 多字段是 4.0+ 语法）。已知限制：dongmx/rdb 在 EOF 操作码后直接返回，不校验尾部 CRC——EOF 之后的尾部损坏检测不到。
+`testdata/` 持有四个版本的真实 dump（3.2=本机 3.2.100 生成，5/6.2/7.2=官方镜像生成），端到端断言全绿：6 键、TTL 5/1、五类型。为支持 Redis 7（RDB v11），vendored `rdb/decoder.go` 打了标注 `gengar-pro patch` 的补丁：版本门 9→11；新增对象类型 16（hash_listpack）/17（zset_listpack）/18（list_quicklist_2，节点带 container 字段 1=plain/2=packed）/20（set_listpack），值对照 redis 7.2 `src/rdb.h`；重写了可用的 listpack 条目读取器（上游 `lpGet` 是调试桩，其 12/32-bit-str 常量还有误）。回调序列与 ziplist 变体一致（`SizeOfValue` 分支），内存估算适配层无需感知差异。stream 变体 19/21 未接入（暂无夹具覆盖）。3.2 的多字段 hash 需 `HMSET`（HSET 多字段是 4.0+ 语法）。已知限制：dongmx/rdb 在 EOF 操作码后直接返回，不校验尾部 CRC——EOF 之后的尾部损坏检测不到。
