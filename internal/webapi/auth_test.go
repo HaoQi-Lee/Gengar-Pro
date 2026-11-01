@@ -126,6 +126,67 @@ func TestLoginRateLimit(t *testing.T) {
 	s.loginLim.mu.Unlock()
 }
 
+// TestLoginAuditEvents 认证审计：login_ok/login_fail/logout 三类事件
+// 的字段约定（login_fail 因未认证 User 置空，尝试的用户名放 Output）；
+// 限速 429 路径不产生事件（无新条目）。IP 用显式 RemoteAddr 断言。
+func TestLoginAuditEvents(t *testing.T) {
+	s := newTestServer(t, map[string]string{"alice": "pw1"})
+	l := openTestAudit(t, s)
+	const ip = "203.0.113.7:5555" // TEST-NET-3，避免依赖 httptest 默认值
+
+	// ① 正确凭据 → 200 + 1 条 login_ok
+	w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"pw1"}`, "", ip)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login ok = %d; want 200", w.Code)
+	}
+	ck := "gengar_sess=" + strings.SplitN(strings.Split(w.Header().Get("Set-Cookie"), ";")[0], "=", 2)[1]
+	es := readAuditEntries(t, l)
+	if len(es) != 1 || es[0].Tool != "login_ok" || es[0].User != "alice" {
+		t.Fatalf("login_ok 事件 = %+v; want 1 条 tool=login_ok user=alice", es)
+	}
+	if es[0].Output != "user=alice ip=203.0.113.7" || es[0].TS == "" {
+		t.Fatalf("login_ok 字段 = %+v", es[0])
+	}
+
+	// ② 登出 → 1 条 logout：User=会话用户名
+	if w, _ := doJSON(t, s, "POST", "/api/logout", "", ck); w.Code != http.StatusOK {
+		t.Fatalf("logout = %d; want 200", w.Code)
+	}
+	es = readAuditEntries(t, l)
+	if len(es) != 2 || es[1].Tool != "logout" || es[1].User != "alice" || es[1].Output != "user=alice" {
+		t.Fatalf("logout 事件 = %+v; want tool=logout user=alice", es)
+	}
+
+	// ③ 错密码 → 401 + 1 条 login_fail：未认证 User 空，尝试名在 Output
+	if w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"bad"}`, "", ip); w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password = %d; want 401", w.Code)
+	}
+	es = readAuditEntries(t, l)
+	if len(es) != 3 || es[2].Tool != "login_fail" || es[2].User != "" {
+		t.Fatalf("login_fail(错密码) = %+v; want tool=login_fail user 空", es)
+	}
+	if es[2].Output != "user=alice ip=203.0.113.7" {
+		t.Fatalf("login_fail(错密码) Output = %q", es[2].Output)
+	}
+
+	// ④ 不存在的用户名 → 同样 1 条 login_fail（Output 带尝试名）
+	if w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"ghost","password":"bad"}`, "", ip); w.Code != http.StatusUnauthorized {
+		t.Fatalf("no such user = %d; want 401", w.Code)
+	}
+	es = readAuditEntries(t, l)
+	if len(es) != 4 || es[3].Tool != "login_fail" || es[3].User != "" || es[3].Output != "user=ghost ip=203.0.113.7" {
+		t.Fatalf("login_fail(无此用户) = %+v", es)
+	}
+
+	// ⑤ 限速 429：alice ③ 中已失败一次（冷却 2s），立刻再试被拒 → 无新条目
+	if w := doJSONFromIP(t, s, "POST", "/api/login", `{"username":"alice","password":"pw1"}`, "", ip); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate limited = %d; want 429", w.Code)
+	}
+	if es = readAuditEntries(t, l); len(es) != 4 {
+		t.Fatalf("429 后条数 = %d; want 4（限速拒绝不记事件）", len(es))
+	}
+}
+
 func TestMeAndLoginReturnRole(t *testing.T) {
 	s := newTestServer(t, map[string]string{"alice": "pw1", "root": "pw2"})
 	if err := s.core.Store().SetUserRole("root", "admin"); err != nil {

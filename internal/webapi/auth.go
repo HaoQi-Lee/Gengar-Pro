@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -24,8 +25,8 @@ const tokenTTL = 7 * 24 * time.Hour
 
 // tokenEntry 是 tokens 表的值：用户名 + 签发时间（TTL 判定用）。
 type tokenEntry struct {
-	user    string
-	issued  time.Time
+	user   string
+	issued time.Time
 }
 
 // loginLimit 登录失败指数限速（评审 ③-1）：同一用户名连续失败后，
@@ -105,15 +106,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(req.Password))
 		s.loginLim.fail(req.Username)
+		// 未认证 → User 置空；尝试的用户名放 Output（审计侧可追溯爆破目标）。
+		s.auditOp("", "login_fail", fmt.Sprintf("user=%s ip=%s", req.Username, clientIP(r)), nil)
 		writeErr(w, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PwHash), []byte(req.Password)) != nil {
 		s.loginLim.fail(req.Username)
+		s.auditOp("", "login_fail", fmt.Sprintf("user=%s ip=%s", req.Username, clientIP(r)), nil)
 		writeErr(w, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
 	s.loginLim.success(req.Username)
+	s.auditOp(u.Username, "login_ok", fmt.Sprintf("user=%s ip=%s", u.Username, clientIP(r)), nil)
 	tok := make([]byte, 32)
 	if _, err := rand.Read(tok); err != nil {
 		writeErr(w, http.StatusInternalServerError, "生成会话失败")
@@ -135,6 +140,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// 删 token 前取用户名记 logout；未登录登出（无有效 token）不记。
+	if name, ok := s.currentUser(r); ok {
+		s.auditOp(name, "logout", "user="+name, nil)
+	}
 	if c, err := r.Cookie(cookieName); err == nil {
 		s.tokenMu.Lock()
 		delete(s.tokens, c.Value)
