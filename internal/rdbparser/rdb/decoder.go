@@ -166,10 +166,19 @@ const (
 	TypeHashZiplist     ValueType = 13
 	TypeListQuicklist   ValueType = 14
 	TypeStreamListPacks ValueType = 15
+	// gengar-pro patch: Redis 7（RDB v10/v11）新增的 listpack 编码类型。
+	// 值对照 redis 7.2 src/rdb.h；19/21（stream 变体 v2/v3）暂未接入。
+	TypeHashListpack   ValueType = 16
+	TypeZSetListpack   ValueType = 17
+	TypeListQuicklist2 ValueType = 18
+	TypeSetListpack    ValueType = 20
 )
 
 const (
-	rdbVersion  = 9
+	// gengar-pro patch: 上游 dongmx/rdb 写死 9，但本 fork 的读取层已实现
+	// listpack（Redis 7 的 hash/zset/list 编码），实测 v11 dump 可解析，
+	// 版本门放到 11（Redis 7.x）。升级 vendored 快照时需复核此改动。
+	rdbVersion  = 11
 	rdb6bitLen  = 0
 	rdb14bitLen = 1
 	rdb32bitLen = 0x80
@@ -467,6 +476,15 @@ func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
 		return errors.Trace(d.readZiplistZset(key, expiry))
 	case TypeHashZiplist:
 		return errors.Trace(d.readZiplistHash(key, expiry))
+	// gengar-pro patch: Redis 7 listpack 编码
+	case TypeHashListpack:
+		return errors.Trace(d.readListpackHash(key, expiry))
+	case TypeZSetListpack:
+		return errors.Trace(d.readListpackZset(key, expiry))
+	case TypeListQuicklist2:
+		return errors.Trace(d.readQuicklist2(key, expiry))
+	case TypeSetListpack:
+		return errors.Trace(d.readListpackSet(key, expiry))
 	case TypeStreamListPacks:
 		return errors.Trace(d.readStream(key, expiry))
 	case TypeModule:
@@ -991,6 +1009,274 @@ func (d *decode) readZiplistHash(key []byte, expiry int64) error {
 	d.event.EndHash(key)
 	return nil
 }
+
+// ---- gengar-pro patch: Redis 7 listpack 编码读取 ----
+// 上游的 lpGet/readListPack 是调试桩（打印 stdout、不返回值），类型
+// 16/17/18 未接入 readObject。以下按 listpack 规范实现，回调序列与
+// ziplist 变体一致（Encoding="listpack"、SizeOfValue=整包字节数），
+// 使 rdr 谱系的内存估算适配层（SizeOfValue>0 分支）无需感知差异。
+
+// lpReadEntry 解析 listpack 的下一个条目并返回其字节值：整型条目返回
+// 十进制字符串（与 readZiplistEntry 语义一致），字符串条目返回原文；
+// 同时跳过条目尾部的 backlen 变长编码。
+func lpReadEntry(buf *sliceBuffer) ([]byte, error) {
+	header, err := buf.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	var (
+		value    []byte
+		entryLen int
+	)
+	switch {
+	case header&0x80 == 0: // 7-bit uint（无非负形式）
+		value = []byte(strconv.FormatUint(uint64(header), 10))
+		entryLen = 1
+	case header&0xC0 == 0x80: // 6-bit str
+		n := int(header & 0x3F)
+		value, err = buf.Slice(n)
+		if err != nil {
+			return nil, err
+		}
+		entryLen = 1 + n
+	case header&0xE0 == 0xC0: // 13-bit int（有符号）
+		b1, err := buf.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		uval := uint64(header&0x1F)<<8 | uint64(b1)
+		value = lpIntString(uval, 1<<12, 8191)
+		entryLen = 2
+	case header == 0xF1: // 16-bit int
+		b, err := buf.Slice(2)
+		if err != nil {
+			return nil, err
+		}
+		value = lpIntString(uint64(binary.LittleEndian.Uint16(b)), 1<<15, math.MaxUint16)
+		entryLen = 3
+	case header == 0xF2: // 24-bit int
+		b, err := buf.Slice(3)
+		if err != nil {
+			return nil, err
+		}
+		uval := uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16
+		value = lpIntString(uval, 1<<23, 0xFFFFFF)
+		entryLen = 4
+	case header == 0xF3: // 32-bit int
+		b, err := buf.Slice(4)
+		if err != nil {
+			return nil, err
+		}
+		value = lpIntString(uint64(binary.LittleEndian.Uint32(b)), 1<<31, math.MaxUint32)
+		entryLen = 5
+	case header == 0xF4: // 64-bit int
+		b, err := buf.Slice(8)
+		if err != nil {
+			return nil, err
+		}
+		value = lpIntString(binary.LittleEndian.Uint64(b), 1<<63, math.MaxUint64)
+		entryLen = 9
+	case header == 0xE1: // 12-bit str
+		b1, err := buf.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		n := int(header&0x0F)<<8 | int(b1)
+		value, err = buf.Slice(n)
+		if err != nil {
+			return nil, err
+		}
+		entryLen = 2 + n
+	case header == 0xE2: // 32-bit str
+		b, err := buf.Slice(4)
+		if err != nil {
+			return nil, err
+		}
+		n := int(binary.LittleEndian.Uint32(b))
+		value, err = buf.Slice(n)
+		if err != nil {
+			return nil, err
+		}
+		entryLen = 5 + n
+	default:
+		return nil, fmt.Errorf("rdb: unknown listpack header byte: %d", header)
+	}
+
+	// 跳过条目尾部 backlen（条目字节数的变长编码）：按 entryLen 推占用
+	// 字节数（<64→1，<16384→2，<2^21→3，否则 5）。
+	backlenBytes := 1
+	switch {
+	case entryLen >= 1<<21:
+		backlenBytes = 5
+	case entryLen >= 1<<14:
+		backlenBytes = 3
+	case entryLen >= 1<<6:
+		backlenBytes = 2
+	}
+	if _, err := buf.Slice(backlenBytes); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+// lpIntString 把 listpack 的整型编码转为十进制字符串。uval >= negstart
+// 表示负数区：真值 = -(negmax-uval)-1（同上游 lpGet 的换算，源自
+// listpack.c 的 lpGet）。
+func lpIntString(uval, negstart, negmax uint64) []byte {
+	if uval >= negstart {
+		uval = negmax - uval
+		return []byte(strconv.FormatInt(-int64(uval)-1, 10))
+	}
+	return []byte(strconv.FormatUint(uval, 10))
+}
+
+// lpElementCount 读 listpack 头（4 字节 total-bytes + 2 字节 num-elements）。
+func lpElementCount(listpack []byte) (int64, error) {
+	if len(listpack) < 6 {
+		return 0, fmt.Errorf("rdb: listpack too short: %d bytes", len(listpack))
+	}
+	return int64(binary.LittleEndian.Uint16(listpack[4:6])), nil
+}
+
+func (d *decode) readListpackHash(key []byte, expiry int64) error {
+	listpack, err := d.readString()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	numElements, err := lpElementCount(listpack)
+	if err != nil {
+		return fmt.Errorf("listpack hash key %s: %v", key, err)
+	}
+	buf := newSliceBuffer(listpack)
+	buf.Slice(6) // 头部已在 lpElementCount 读过，跳到首条目
+	length := numElements / 2
+	d.info.Encoding = "listpack"
+	d.info.SizeOfValue = len(listpack)
+	d.event.StartHash(key, length, expiry, d.info)
+	for i := int64(0); i < length; i++ {
+		field, err := lpReadEntry(buf)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		value, err := lpReadEntry(buf)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		d.event.Hset(key, field, value)
+	}
+	d.event.EndHash(key)
+	return nil
+}
+
+func (d *decode) readListpackZset(key []byte, expiry int64) error {
+	listpack, err := d.readString()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	numElements, err := lpElementCount(listpack)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	buf := newSliceBuffer(listpack)
+	buf.Slice(6)
+	length := numElements / 2
+	d.info.Encoding = "listpack"
+	d.info.SizeOfValue = len(listpack)
+	d.event.StartZSet(key, length, expiry, d.info)
+	for i := int64(0); i < length; i++ {
+		member, err := lpReadEntry(buf)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		scoreBytes, err := lpReadEntry(buf)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		score, err := strconv.ParseFloat(string(scoreBytes), 64)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		d.event.Zadd(key, score, member)
+	}
+	d.event.EndZSet(key)
+	return nil
+}
+
+// readListpackSet 读 RDB_TYPE_SET_LISTPACK（Redis 7）：每个条目一个成员。
+func (d *decode) readListpackSet(key []byte, expiry int64) error {
+	listpack, err := d.readString()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	numElements, err := lpElementCount(listpack)
+	if err != nil {
+		return fmt.Errorf("listpack set key %s: %v", key, err)
+	}
+	buf := newSliceBuffer(listpack)
+	buf.Slice(6)
+	d.info.Encoding = "listpack"
+	d.info.SizeOfValue = len(listpack)
+	d.event.StartSet(key, numElements, expiry, d.info)
+	for i := int64(0); i < numElements; i++ {
+		member, err := lpReadEntry(buf)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		d.event.Sadd(key, member)
+	}
+	d.event.EndSet(key)
+	return nil
+}
+
+// readQuicklist2 读 RDB_TYPE_LIST_QUICKLIST_2（Redis 7）。格式（对照
+// redis 7.2 src/rdb.c rdbGenericLoadQuicklistObject）：节点数，随后每个
+// 节点 = container 字段（1=PLAIN 单一大元素原样、2=PACKED listpack）
+// + 长度前缀字符串 blob。回调序列与 TypeListQuicklist 相同（元素逐个
+// Rpush），Zips 语义不变（节点数）。
+func (d *decode) readQuicklist2(key []byte, expiry int64) error {
+	length, _, err := d.readLength()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	d.info.Encoding = "quicklist"
+	d.info.Zips = length
+	d.event.StartList(key, int64(-1), expiry, d.info)
+	for length > 0 {
+		length--
+		container, _, err := d.readLength()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		blob, err := d.readString()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		switch container {
+		case 1: // QUICKLIST_NODE_CONTAINER_PLAIN：blob 即单个元素
+			d.event.Rpush(key, blob)
+		case 2: // QUICKLIST_NODE_CONTAINER_PACKED：blob 是 listpack
+			numElements, err := lpElementCount(blob)
+			if err != nil {
+				return fmt.Errorf("quicklist2 key %s: %v", key, err)
+			}
+			buf := newSliceBuffer(blob)
+			buf.Slice(6)
+			for i := int64(0); i < numElements; i++ {
+				entry, err := lpReadEntry(buf)
+				if err != nil {
+					return errors.Trace(err)
+				}
+				d.event.Rpush(key, entry)
+			}
+		default:
+			return fmt.Errorf("quicklist2 key %s: unknown container %d", key, container)
+		}
+	}
+	d.event.EndList(key)
+	return nil
+}
+
+// ---- gengar-pro patch end ----
 
 func readZiplistLength(buf *sliceBuffer) (int64, error) {
 	buf.Seek(8, 0) // skip the zlbytes and zltail
