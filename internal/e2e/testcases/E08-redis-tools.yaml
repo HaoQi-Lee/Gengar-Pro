@@ -1,0 +1,51 @@
+# E08 —— redis 插件三工具全链路：redis: true 触发 startRedisHost 在容器内
+# 装好 redis（alpine 3.20 → redis 7.2.9，RDB v11 与 rdbparser 夹具同版）、
+# 造 6 键并 SAVE 出 /tmp/dump.rdb。同一会话三回合走完「发现 → 操作 → 离线
+# 分析」，全部是真实执行（SSH RunArgv / SFTP FetchFile / 本地 rdbparser）：
+#   1. redis_discover：busybox pgrep -af 解析出 *:6379 → PING/INFO 探活，
+#      stdout 应出现 :6379 与版本行
+#   2. redis_cli DBSIZE：命令透传，stdout 回显独占一行的键数 6
+#   3. redis_rdb 显式 path：stat 探测 + SFTP 拉回 + 本地解析，报告头部
+#      「总键数 6」（6 键 = string 2 / hash / list / zset / set，其一带 TTL）
+# 最后一并验证 audit_field 新断言钉住 redis_rdb 的 Output。
+name: E08-redis-tools
+description: redis 三工具链——discover 发现 6379 / cli DBSIZE=6 / rdb 离线分析总键数 6
+llm: stub
+hosts: 1
+redis: true
+script:
+  - tool_calls:
+      - id: d1
+        name: redis_discover
+        input:
+          hosts: ["e2e-host-1"]
+  - tool_calls:
+      - id: c1
+        name: redis_cli
+        input:
+          args: ["DBSIZE"]
+          hosts: ["e2e-host-1"]
+  - tool_calls:
+      - id: r1
+        name: redis_rdb
+        input:
+          path: /tmp/dump.rdb
+          hosts: ["e2e-host-1"]
+  - final_text: "redis 巡检完成：实例在 6379 端口，库内 6 键，RDB 报告总键数 6。"
+inputs:
+  - 巡检这台机器上的 redis
+assertions:
+  - type: tool_called
+    spec: {tool: redis_discover}
+  - type: tool_called
+    spec: {tool: redis_cli}
+  - type: tool_called
+    spec: {tool: redis_rdb}
+  - type: response_contains
+    spec: {matches: ":6379"} # 发现行「:6379  redis 7.2.9  standalone  auth=no」
+  - type: response_contains
+    spec: {matches: "6\n"} # DBSIZE 回显独占一行（工具结果 ⎿ 6），非任意 6 字符
+  - type: response_contains
+    spec: {matches: "=== rdb: /tmp/dump.rdb"} # rdb 报告头——只可能来自真实拉回并渲染的报告
+  - type: audit_field
+    spec: {tool: redis_rdb, output_re: "总键数 6"} # 报告内容进审计（final_text 也含该词，故内容钉在 audit 上）

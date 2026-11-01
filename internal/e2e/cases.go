@@ -25,6 +25,7 @@ type e2eCase struct {
 	Hosts       int              `yaml:"hosts"`    // sshd 容器数
 	Tags        map[int][]string `yaml:"tags"`     // 可选：主机序号（0 起）→ 标签
 	AutoYes     *bool            `yaml:"auto_yes"` // 可选：headless --yes 自动批准；缺省 true（E03 用 false 走人工确认拒绝路径）
+	Redis       bool             `yaml:"redis"`    // 可选：容器就绪后在每台主机内装并启动 redis（startRedisHost，E08 三工具的被测面）
 	Script      []scriptTurn     `yaml:"script"`   // 单轮用例的桩脚本（runs 存在时忽略）
 	Inputs      []string         `yaml:"inputs"`   // 单轮用例的输入
 	Runs        []caseRun        `yaml:"runs"`     // 多轮（跨会话）用例：每轮一个 headless 进程，共用同一 DataDir

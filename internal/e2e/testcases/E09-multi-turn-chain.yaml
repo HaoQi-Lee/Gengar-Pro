@@ -1,0 +1,50 @@
+# E09 —— 多轮链：runs:2 两个 headless 进程共用同一 DataDir。run1
+# memory_write 落链标记，run2 是全新进程 memory_read 读回。与 E05（钉
+# 记忆文件跨进程存活）互补，这里钉的是链路行为本身：
+#   - 顺序：合并 stdout 上 memory_write 先于 memory_read（run1 整体先于
+#     run2，两个工具名都在各自的 ⏺ 工具头里）
+#   - 读回：run2 的真实 memory_read 工具输出（memory.Memory 的
+#     MarshalIndent 形态 `"marker": "值"`——带空格的缩进 JSON）出现在
+#     stdout。这不是桩回放的 final_text（脚本写死），而是 memory.Store
+#     跨进程读出的内容；run1 工具头里的输入是紧凑 JSON（无空格），
+#     带空格形态只有真实读回能产生
+#   - 落盘：memory_contains 直查 dataDir/memory/e2e-host-1.json
+name: E09-multi-turn-chain
+description: 多轮链——run1 写入链标记，run2 新进程读回，顺序与真实读出都可断言
+llm: stub
+hosts: 1
+runs:
+  - script:
+      - tool_calls:
+          - id: w1
+            name: memory_write
+            input:
+              host: e2e-host-1
+              category: system_info
+              data:
+                marker: e2e-chain-9f31ab
+                note: multi-turn chain probe
+      - final_text: "链首完成：标记 e2e-chain-9f31ab 已写入记忆。"
+    inputs:
+      - 把链标记写入这台机器的记忆
+  - script:
+      - tool_calls:
+          - id: r1
+            name: memory_read
+            input:
+              host: e2e-host-1
+              category: system_info
+      - final_text: "链尾完成：读回的标记是 e2e-chain-9f31ab。"
+    inputs:
+      - 读回这台机器记忆里的链标记
+assertions:
+  - type: tool_called
+    spec: {tool: memory_write}
+  - type: tool_called
+    spec: {tool: memory_read}
+  - type: response_contains
+    spec: {matches: "memory_write[\\s\\S]*memory_read"} # 顺序：先写后读
+  - type: response_contains
+    spec: {matches: '"marker": "e2e-chain-9f31ab"'} # 缩进 JSON 形态 = 真实 memory_read 输出
+  - type: memory_contains
+    spec: {host: e2e-host-1, matches: "e2e-chain-9f31ab"}

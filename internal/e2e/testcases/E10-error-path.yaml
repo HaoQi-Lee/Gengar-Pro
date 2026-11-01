@@ -1,0 +1,31 @@
+# E10 —— 错误路径：清单正常播种一台（e2e-host-1），但 execute_command 的
+# hosts 引用一个保证不存在的主机名 e2e-ghost-host。走的是 resolver 的
+# 「零目标 + 未解析引用」分支（registry.Execute）：不是 SSH 失败也不是
+# [FAILED] 分节（那只出现在多目标部分失败），而是工具级 IsError 结果
+# 「Error: no target hosts resolved (unresolved refs: e2e-ghost-host)」，
+# agent 包装为 Command failed 后回传模型——下一回合模型据此改口收束。
+# 断言：stdout 含 resolver 报错文案 + audit_field 钉 IsError=true（错误
+# 也要有审计与回传，而非静默吞掉）。
+name: E10-error-path
+description: hosts 引用清单不存在的主机——resolver 报错回传，audit 记 IsError
+llm: stub
+hosts: 1
+script:
+  - tool_calls:
+      - id: t1
+        name: execute_command
+        input:
+          command: "echo e2e-ghost-probe"
+          hosts: ["e2e-ghost-host"]
+  - final_text: "目标主机 e2e-ghost-host 不在清单中，命令未在任何主机上执行。"
+inputs:
+  - 在 e2e-ghost-host 上执行 echo e2e-ghost-probe
+assertions:
+  - type: tool_called
+    spec: {tool: execute_command}
+  - type: response_contains
+    spec: {matches: "no target hosts resolved \\(unresolved refs: e2e-ghost-host\\)"}
+  - type: response_not_contains
+    spec: {matches: "e2e-ghost-probe\\n"} # 回显未出现 = 命令未达任何主机
+  - type: audit_field
+    spec: {tool: execute_command, is_error: true}

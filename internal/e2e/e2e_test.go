@@ -49,9 +49,9 @@ func TestE2ECases(t *testing.T) {
 }
 
 // runCase 是一个用例的完整生命周期：LLM 源（桩/真机）→ 目标机（Docker
-// sshd）→ 播种 → 逐轮 headless 驱动（runs>1 = 多进程共用 DataDir，跨
-// 会话正是 E05 的被测点；每轮独立起桩，脚本从头回放）→ 断言对合并
-// stdout + 全量 audit + 数据目录求值。
+// sshd；redis: true 时容器内再装 redis）→ 播种 → 逐轮 headless 驱动
+// （runs>1 = 多进程共用 DataDir，跨会话正是 E05 的被测点；每轮独立起
+// 桩，脚本从头回放）→ 断言对合并 stdout + 全量 audit + 数据目录求值。
 func runCase(t *testing.T, c *e2eCase) {
 	apiKey := "e2e-key"
 	if c.LLM == "real" {
@@ -63,6 +63,14 @@ func runCase(t *testing.T, c *e2eCase) {
 	}
 
 	hosts := startHosts(t, c.Hosts) // Docker 缺失 → 此处统一 Skip
+	if c.Redis {
+		// redis: true 的用例（E08）在每台主机容器内装好 redis 并 SAVE 出
+		// dump（dump 路径与 YAML 里 redis_rdb 的显式 path 是同一约定：
+		// /tmp/dump.rdb）。
+		for _, h := range hosts {
+			startRedisHost(t, h)
+		}
+	}
 
 	dataDir := t.TempDir()
 	seed := make([]SeedHost, 0, len(hosts))
