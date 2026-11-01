@@ -1079,6 +1079,9 @@ func TestAuditAskUserEntry(t *testing.T) {
 		if !e.IsError {
 			t.Fatalf("ask_user error entry must set IsError: %+v", e)
 		}
+		if !e.Approved {
+			t.Fatalf("ask_user error entry must keep Approved=true (clarify skips the gate): %+v", e)
+		}
 		if !contains(e.Output, "ask error") || !contains(e.Output, "user dismissed") {
 			t.Fatalf("ask_user error output = %q; want error summary", e.Output)
 		}
