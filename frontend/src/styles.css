@@ -907,42 +907,6 @@ textarea:focus {
   font-size: 12px;
 }
 
-/* ---- 终端右键菜单（XShell 对标第一步） ---- */
-.term-menu-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-}
-.term-menu {
-  position: fixed;
-  z-index: 61;
-  min-width: 140px;
-  background: var(--panel-2);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  padding: 4px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-  display: flex;
-  flex-direction: column;
-}
-.term-menu-item {
-  background: none;
-  border: none;
-  border-radius: 4px;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  padding: 5px 10px;
-  cursor: pointer;
-}
-.term-menu-item:hover:not(:disabled) {
-  background: rgba(157, 77, 255, 0.16); /* 原 panel 对比 1.08:1 且变暗；与其余 hover 一致提亮 */
-}
-.term-menu-item:disabled {
-  color: var(--text-faint);
-  cursor: default;
-}
-
 /* ---- 侧栏目录树 ---- */
 .folder-row {
   display: flex;

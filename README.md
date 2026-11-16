@@ -137,7 +137,7 @@ systemctl daemon-reload && systemctl enable --now gengar
 
 多用户：admin 在侧栏「用户」管理弹窗建号/重置密码/删号（仅 admin 可见，删除用户时其名下主机自动移交 admin），每人各自登录。
 
-> **终端复制/粘贴提示**：浏览器剪贴板 API 需安全上下文——本机访问用 `http://localhost:<port>`，跨机访问置于 TLS 反代之后；HTTP 内网 IP 下复制自动降级（execCommand）、粘贴走原生路径，右键菜单会提示。
+> **终端复制/粘贴**：右键用浏览器原生菜单（复制/粘贴直接可用）；另支持 XShell 习惯键位 Ctrl+Shift+C/V、Ctrl/Shift+Insert。若部署在 HTTP 内网 IP 下，菜单与键位粘贴走浏览器原生路径（不受安全上下文限制）。
 
 ### 多用户与数据隔离
 

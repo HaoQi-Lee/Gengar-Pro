@@ -25,7 +25,7 @@ gengar-pro 的 Web 前端（React 18 + TypeScript + Vite）：登录页 + 服务
 - `src/components/Chat.tsx` — 消息流渲染：user 气泡、assistant 块序列（文本经 Markdown 渲染/思考残留/工具行含活动计时）、思考指示器（旋转帧 + 动词 + 秒数）、多主机 body 分节；`MessageView` memo 化——流式 delta 只重渲染末块
 - `src/components/Markdown.tsx` — assistant 文本的 Markdown 渲染（react-markdown + remark-gfm）：输出 React 元素且默认忽略原始 HTML（无 XSS 面），链接新标签打开；代码块无语法高亮；memo——历史块的解析结果按 text 引用缓存
 - `src/components/ErrorBoundary.tsx` — 渲染异常降级卡片（错误信息 + 重试渲染），对话区与终端分别包裹，异常不再整页白屏
-- `src/components/TerminalPane.tsx` — 单个 SSH 终端：xterm 渲染 WS 下行流（base64 → 字节；首帧为服务端补发的回放缓冲）、输入 onData/ResizeObserver → conn.send/resize 上行、断线遮罩（exit 帧含连接异常统一映射）、右键菜单与复制粘贴（navigator.clipboard + Ctrl/Shift+Insert、Ctrl+Shift+C/V 键位）；xterm 透明底（allowTransparency）——底色与耿鬼水印由 `.term-pane` 承载
+- `src/components/TerminalPane.tsx` — 单个 SSH 终端：xterm 渲染 WS 下行流（base64 → 字节；首帧为服务端补发的回放缓冲）、输入 onData/ResizeObserver → conn.send/resize 上行、断线遮罩（exit 帧含连接异常统一映射）、复制粘贴（浏览器原生右键菜单 + XShell 习惯键位 Ctrl/Shift+Insert、Ctrl+Shift+C/V；不自绘菜单、不拦 contextmenu——原生菜单的粘贴/复制作用于 xterm helper textarea，HTTP 非安全上下文下同样可用）；xterm 透明底（allowTransparency）——底色与耿鬼水印由 `.term-pane` 承载
 - `src/components/Sidebar.tsx` — 主机清单目录树：文件夹行（展开/收起、计数、键盘可达、拖拽放置目标）+ 主机行（状态点、>_ 开终端、✎ 编辑、两次点击删除、可拖拽归类）；右键菜单（空白=新建目录/添加主机，目录=添加主机到此目录/删除目录）——单级虚拟目录，新建即预填目录的主机表单、删除=目录内主机移回根（行内二次确认）；仅自动展开新增目录；「用户」入口仅 admin 渲染；底部账户区（当前用户名 + 退出登录）
 - `src/components/UsersDialog.tsx` — 用户管理弹窗（仅 admin）：用户列表（admin 角色徽标）+ 创建表单（密码两遍一致性校验）+ 行内重置密码 + 两次点击删除（当前登录账号禁删）
 - `src/components/ScopePicker.tsx` — 对话目标选择器（仅空目标时弹出，pane 级遮罩不挡 tab 栏）：按目录分组复选 + 目录整组勾选 + 全部/清空快捷项；「开始对话」经 `SetChatScope` 绑定会话，至少选一台、会话未绑定时禁用；一经选定本会话不可改

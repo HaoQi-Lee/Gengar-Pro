@@ -3,8 +3,14 @@
 // 断线（exit 帧，含连接异常统一映射）后停止上行并显示遮罩；tab 关闭由外层
 // 调 TerminalClose 后卸载本组件（卸载只 dispose 渲染端）。隐藏期间保持挂载
 // 以保留回滚缓冲。
+//
+// 复制粘贴：不自绘右键菜单、不拦 contextmenu——浏览器原生菜单即工作
+// （xterm 在右键时把 helper textarea 移到光标下聚焦，菜单「粘贴」作用于
+// textarea → 原生 paste 事件 → onData 上行；菜单「复制」走 copy 事件 →
+// xterm copyHandler 填 selectionText。浏览器代读剪贴板，不受 http 非安全
+// 上下文限制）。另有 XShell 习惯键位（下方 attachCustomKeyEventHandler）。
+// 自绘菜单是 Wails 桌面时代的前提（WebView2 默认吞菜单），Web 化后不成立。
 import { useEffect, useRef, useState } from "react";
-import type { MouseEvent } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { connectTerm } from "../api/events";
@@ -27,9 +33,6 @@ export default function TerminalPane({ id, visible }: { id: string; visible: boo
   const connRef = useRef<ReturnType<typeof connectTerm> | null>(null);
   const [exited, setExited] = useState(false);
   const [exitErr, setExitErr] = useState("");
-
-  // 右键菜单（自绘：WebView 吞默认菜单；结构留扩展位——后续全选/清屏等）
-  const [menu, setMenu] = useState<{ x: number; y: number; hasSel: boolean } | null>(null);
 
   const copySelection = () => {
     const t = termRef.current;
@@ -61,7 +64,7 @@ export default function TerminalPane({ id, visible }: { id: string; visible: boo
 
   const pasteClipboard = () => {
     if (!navigator.clipboard) {
-      return; // 非安全上下文：右键菜单按钮已禁用；键位分支已放行原生粘贴路径
+      return; // 非安全上下文：右键粘贴走浏览器原生菜单；键位分支放行原生粘贴
     }
     navigator.clipboard
       .readText()
@@ -163,69 +166,13 @@ export default function TerminalPane({ id, visible }: { id: string; visible: boo
     }
   }, [visible]);
 
-  const openMenu = (e: MouseEvent) => {
-    e.preventDefault();
-    // 钳制在窗口内（菜单约 140x64px，向下向右展开）
-    const x = Math.min(e.clientX, window.innerWidth - 150);
-    const y = Math.min(e.clientY, window.innerHeight - 70);
-    setMenu({ x, y, hasSel: termRef.current?.hasSelection() ?? false });
-  };
-
-  // 菜单开着时 Esc / 窗口失焦关闭（窗口级监听：焦点可能在终端内）
-  useEffect(() => {
-    if (!menu) {
-      return;
-    }
-    const close = () => setMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        close();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("blur", close); // 失焦关闭（设计 §3）：切窗后不残留菜单
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", close);
-    };
-  }, [menu]);
-
   return (
-    <div className="term-pane" onContextMenu={openMenu}>
+    <div className="term-pane">
       <div ref={hostRef} className="term-host" />
       {exited && (
         <div className="term-exit">
           连接已断开{exitErr ? "：" + exitErr : ""}，关闭标签页结束
         </div>
-      )}
-      {menu && (
-        <>
-          {/* 点击外部/失焦关闭：透明全屏层，点击不冒泡到终端 */}
-          <div className="term-menu-mask" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
-          <div className="term-menu" style={{ left: menu.x, top: menu.y }}>
-            <button
-              className="term-menu-item"
-              disabled={!menu.hasSel}
-              onClick={() => {
-                copySelection();
-                setMenu(null);
-              }}
-            >
-              复制
-            </button>
-            <button
-              className="term-menu-item"
-              disabled={!navigator.clipboard}
-              title={navigator.clipboard ? undefined : "需 HTTPS 或 localhost"}
-              onClick={() => {
-                pasteClipboard();
-                setMenu(null);
-              }}
-            >
-              粘贴
-            </button>
-          </div>
-        </>
       )}
     </div>
   );
