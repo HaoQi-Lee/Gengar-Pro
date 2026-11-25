@@ -1298,3 +1298,41 @@ textarea:focus {
   gap: 8px;
   margin-right: auto;
 }
+
+/* ---- 终端 ZMODEM 传输条 ---- */
+.term-xfer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: rgba(35, 8, 64, 0.92); /* 面板紫加深半透明，压在终端流上 */
+  border-top: 1px solid var(--border-strong);
+  font-family: var(--mono);
+  color: var(--text-dim);
+  z-index: 3; /* 高于水印 ::before（负 z）与 xterm 层 */
+}
+.term-xfer.xfer-error {
+  color: var(--danger);
+}
+.term-xfer .xfer-icon {
+  flex: none;
+}
+.term-xfer .xfer-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.term-xfer .xfer-pct,
+.term-xfer .xfer-rate {
+  flex: none;
+  color: var(--text);
+}
+.term-xfer .xfer-cancel {
+  flex: none;
+  padding: 2px 12px; /* 比标准 .btn 紧凑（条内高度受限） */
+}
