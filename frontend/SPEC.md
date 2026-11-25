@@ -8,13 +8,13 @@ package: frontend
 
 ## 概述
 
-gengar-pro 的 Web 前端（React 18 + TypeScript + Vite）：登录页 + 服务器侧栏（状态/编辑/终端入口/目录树）、主区标签页（对话 tab 多会话多开 + 内嵌 SSH 终端）、确认/提问/主机表单/导入/设置/用户管理弹窗。对话流按事件流渲染消息块序列并叠加计时反馈（思考指示器/残留行/工具耗时/轮尾统计）；终端经 xterm.js 渲染 WS PTY 流（attach 自动补发最近 64KB 回放）。所有后端交互经 `src/api/` 传输层：`client.ts` 的 REST 封装与 `events.ts` 的 WS 订阅（对话/终端 + 连接状态回调），组件不直接碰 fetch/WebSocket。代码分割：终端（xterm）与低频弹窗 React.lazy 懒加载，首包不含 xterm。
+gengar-pro 的 Web 前端（React 18 + TypeScript + Vite）：登录页 + 服务器侧栏（状态/编辑/终端入口/目录树）、主区标签页（对话 tab 多会话多开 + 内嵌 SSH 终端）、确认/提问/主机表单/导入/设置/用户管理弹窗。对话流按事件流渲染消息块序列并叠加计时反馈（思考指示器/残留行/工具耗时/轮尾统计）；终端经 xterm.js 渲染 WS PTY 流（attach 自动补发最近 64KB 回放），并支持 ZMODEM 文件传输——rz/sz 原生工作、拖拽上传（自动注入 rz）、下载 offer 自动接收，经 `src/zmodem.ts` 门面接管终端字节流。所有后端交互经 `src/api/` 传输层：`client.ts` 的 REST 封装与 `events.ts` 的 WS 订阅（对话/终端 + 连接状态回调），组件不直接碰 fetch/WebSocket。代码分割：终端（xterm）与低频弹窗 React.lazy 懒加载，首包不含 xterm。
 
 ## 文件
 
 - `src/api/client.ts` — REST 封装：函数名对齐各端点、返回形状函数内解包；401 统一经 `setUnauthorizedHandler` 回调（App 切回登录页），登录接口走 `raw401`（透传 body 文案、不触发回调）
-- `src/api/events.ts` — WS 订阅层：`subscribeChat(session, …)`（按会话连接；hello.session 不符自动重绑回调；自动重连退避 0.5s→15s + `?since=` 续传 + 断档/服务重启全量重排 + 30s 心跳；`onStatus` 连接状态回调——断线触发顶部横幅）与 `connectTerm`（发送排队待 open 冲刷 + 2min ping 保活 + 异常断开统一映射 exit；attach 时服务端先补发回放缓冲）
-- `src/api/client.test.ts` / `src/api/events.test.ts` — vitest 单测（401 分流、帧去重/重排逻辑）
+- `src/api/events.ts` — WS 订阅层：`subscribeChat(session, …)`（按会话连接；hello.session 不符自动重绑回调；自动重连退避 0.5s→15s + `?since=` 续传 + 断档/服务重启全量重排 + 30s 心跳；`onStatus` 连接状态回调——断线触发顶部横幅）与 `connectTerm`（发送排队待 open 冲刷 + 2min ping 保活 + 异常断开统一映射 exit；attach 时服务端先补发回放缓冲；上行 write 帧 data 为 base64——`send` 文本经 UTF-8 编码、`sendBytes` 二进制按 32KB/帧分块）
+- `src/api/client.test.ts` / `src/api/events.test.ts` — vitest 单测（401 分流、帧去重/重排逻辑、write 帧编码/分块）
 - `src/App.tsx` — 根组件：登录态探测（Me/401 回落，带出 isAdmin）；对话 tab 动态多开（每 tab 一个服务端会话，WS hello 绑定/重绑，sessionStorage 刷新恢复，最后一个不可关）；消息/busy/目标/确认按会话隔离（ScopePicker 空目标强制先选——pane 级遮罩、一经选定本会话不可改，hello 通告恢复）；确认/提问决议失败弹回弹窗 + toast（成功才关）；关闭带挂起弹窗的会话时提示「服务端按拒绝放行」；WS 断线顶部横幅；对话区/终端包 ErrorBoundary；终端与低频弹窗 React.lazy 代码分割；主机/弹窗/终端标签页状态
 - `src/timing.ts` — 计时纯函数层：`applyChatEvent` 事件归约器、思考残留/工具耗时/轮尾统计、`settleHangingTools`（取消冻结）、`fmtDur`
 - `src/timing.test.ts` / `src/form.test.ts` / `src/folders.test.ts` — vitest 单测（事件序列契约、标签解析、目录树构建）
@@ -25,8 +25,10 @@ gengar-pro 的 Web 前端（React 18 + TypeScript + Vite）：登录页 + 服务
 - `src/components/Chat.tsx` — 消息流渲染：user 气泡、assistant 块序列（文本经 Markdown 渲染/思考残留/工具行含活动计时）、思考指示器（旋转帧 + 动词 + 秒数）、多主机 body 分节；`MessageView` memo 化——流式 delta 只重渲染末块
 - `src/components/Markdown.tsx` — assistant 文本的 Markdown 渲染（react-markdown + remark-gfm）：输出 React 元素且默认忽略原始 HTML（无 XSS 面），链接新标签打开；代码块无语法高亮；memo——历史块的解析结果按 text 引用缓存
 - `src/components/ErrorBoundary.tsx` — 渲染异常降级卡片（错误信息 + 重试渲染），对话区与终端分别包裹，异常不再整页白屏
-- `src/components/TerminalPane.tsx` — 单个 SSH 终端：xterm 渲染 WS 下行流（base64 → 字节；首帧为服务端补发的回放缓冲）、输入 onData/ResizeObserver → conn.send/resize 上行、断线遮罩（exit 帧含连接异常统一映射）、复制粘贴（浏览器原生右键菜单 + XShell 习惯键位 Ctrl/Shift+Insert、Ctrl+Shift+C/V；不自绘菜单、不拦 contextmenu——原生菜单的粘贴/复制作用于 xterm helper textarea，HTTP 非安全上下文下同样可用）；xterm 透明底（allowTransparency）——底色与耿鬼水印由 `.term-pane` 承载
+- `src/components/TerminalPane.tsx` — 单个 SSH 终端：xterm 渲染 WS 下行流（base64 → 字节先过 zmodem 门面——非协议字节才进 xterm；首帧为服务端补发的回放缓冲）、输入 onData/ResizeObserver → conn.send/resize 上行（传输中键盘门禁，Ctrl+C=取消）、拖拽文件即注入 rz 上传、断线遮罩（exit 帧含连接异常统一映射，onExit 时中止 ZMODEM）、底部传输条（文件名/进度/速率/取消，done 3s 自动隐藏）、复制粘贴（浏览器原生右键菜单 + XShell 习惯键位 Ctrl/Shift+Insert、Ctrl+Shift+C/V；不自绘菜单、不拦 contextmenu——原生菜单的粘贴/复制作用于 xterm helper textarea，HTTP 非安全上下文下同样可用）；xterm 透明底（allowTransparency）——底色与耿鬼水印由 `.term-pane` 承载
 - `src/components/Sidebar.tsx` — 主机清单目录树：文件夹行（展开/收起、计数、键盘可达、拖拽放置目标）+ 主机行（状态点、>_ 开终端、✎ 编辑、两次点击删除、可拖拽归类）；右键菜单（空白=新建目录/添加主机，目录=添加主机到此目录/删除目录）——单级虚拟目录，新建即预填目录的主机表单、删除=目录内主机移回根（行内二次确认）；仅自动展开新增目录；「用户」入口仅 admin 渲染；底部账户区（当前用户名 + 退出登录）
+- `src/zmodem.ts` — ZMODEM 门面（全项目唯一 import zmodem.js 的模块）：Sentry 检测下行字节流（非协议字节回透传、协议帧接管双向）；上传=拖拽预存文件或系统文件选择器（选择器单飞防 rz 重发 ZRINIT 重入）；下载 offer 自动接收——**载荷取 `accept()` 的 Promise 决议值**（zmodem.js 0.1.10 README 所写 `offer.get_payloads()` 系文档虚构，库中不存在；曾致下载 100% 无文件），经可选 `saveFile` 钩子落盘（默认 `Browser.save_to_disk` 内存 Blob + a[download]，测试注入驱动 node 回路）；传输状态快照（phase/name/bytes/total/startedAt/message）+ `fmtXfer` 显示派生（百分比封顶/平均速率换算）；**收发两向均挂 session_end 复位门禁**（发送向曾缺失——上传成功后 isBusy 恒真、键盘被门禁吞掉只能 Ctrl+C，2026-11-25 修复）；取消/超时（rz 无应答 10s）/检测撤回/发送失败路径全复位
+- `src/zmodem.test.ts` / `src/zmodem-shim.d.ts` — vitest 单测（`Header.build` 构造真实 ZRQINIT/ZRINIT 头帧驱动门面：透传/检测/取消/空选择/注入 rz；node 下先垫 `window=globalThis` 再动态 import）；类型垫片（zmodem.js dist 无类型声明，门面内 any 消费）
 - `src/components/UsersDialog.tsx` — 用户管理弹窗（仅 admin）：用户列表（admin 角色徽标）+ 创建表单（密码两遍一致性校验）+ 行内重置密码 + 两次点击删除（当前登录账号禁删）
 - `src/components/ScopePicker.tsx` — 对话目标选择器（仅空目标时弹出，pane 级遮罩不挡 tab 栏）：按目录分组复选 + 目录整组勾选 + 全部/清空快捷项；「开始对话」经 `SetChatScope` 绑定会话，至少选一台、会话未绑定时禁用；一经选定本会话不可改
 - `src/components/HostForm.tsx` — 主机录入/编辑双模式表单（秘密不回填留空保持不变；私钥走文件上传 base64 随保存提交；「测试」按钮用当前表单参数直连探测不落库；`presetFolder` 新建时预填目录；保存/测试经 client.ts）
@@ -41,13 +43,13 @@ gengar-pro 的 Web 前端（React 18 + TypeScript + Vite）：登录页 + 服务
 ## API（关键约定，非导出库）
 
 - REST（`client.ts`）：登录态探测 `Me`（含 role）、对话（带 session 路由）`SubmitMessage`/`CancelTask`/`ResolveConfirm`/`ResolveAsk`/`SetChatScope`（对话目标）、主机 `GetHosts`/`SaveHost`（含 keyData 上传）/`DeleteHost`/`TestHost`/`TestHostDraft`（表单内测试）、终端 `OpenTerminal`/`TerminalClose`、设置 `GetSettings`/`SaveSettings`、导入 `PreviewXshell`/`ImportXshell`、用户管理（admin）`GetUsers`/`CreateUser`/`ResetUserPassword`/`DeleteUser`
-- WS（`events.ts`）：`subscribeChat` 帧 t=hello|chat|confirm|ask|confirm_done|ask_done|reset，按 seq 去重与断档检测；`connectTerm` 下行 data(base64)/exit、上行 write/resize/ping
+- WS（`events.ts`）：`subscribeChat` 帧 t=hello|chat|confirm|ask|confirm_done|ask_done|reset，按 seq 去重与断档检测；`connectTerm` 下行 data(base64)/exit、上行 write（data 为 base64——`send` 文本/`sendBytes` 二进制分块）/resize/ping
 - 后端布尔字段 omitempty（`ok:false`/`start:false` 不出现在 JSON）——判断一律真值而非 `=== true`
 - cookie 会话（HttpOnly/SameSite=Lax）随 fetch/WS 自动携带；任何 401（会话过期/他处登出）触发全局回落登录页并清弹窗/忙态残留
 
 ## 依赖
 
-**第三方：** `react`、`react-dom`、`@xterm/xterm`、`@xterm/addon-fit`、`react-markdown`、`remark-gfm`；开发链 `vite`、`typescript`、`vitest`、`@vitejs/plugin-react`
+**第三方：** `react`、`react-dom`、`@xterm/xterm`、`@xterm/addon-fit`、`zmodem.js`（0.1.10，Apache-2.0，经 dist bundle 副作用 import 挂 `window.Zmodem`）、`react-markdown`、`remark-gfm`；开发链 `vite`、`typescript`、`vitest`、`@vitejs/plugin-react`
 
 **传输：** `src/api/` 内建的 fetch/WebSocket 封装（Wails 生成绑定与 wailsjs 已随桌面形态移除）
 
@@ -70,6 +72,10 @@ WS 订阅只在登录态就绪时注册一次（effect 依赖 username），全�
 ### 渲染性能与韧性（评审 ④）
 
 `MessageView`/`MarkdownView` memo 化：流式 delta 只更新末条消息（消息只追加不插入，索引即稳定 key），历史消息引用不变即跳过重渲染——Markdown 不再全列表重解析。ErrorBoundary 包裹对话区与终端：渲染异常降级为错误卡片（可重试），不整页白屏。代码分割：TerminalPane（xterm ~337KB）/Settings/ImportDialog/UsersDialog 懒加载，首包 688KB→344KB。WS 断线经 `onStatus` 回调驱动顶部横幅，恢复即隐藏。
+
+### 终端 ZMODEM 传输的门面接管（2026-11-25）
+
+ZMODEM 数据混在终端字节流里（为串行终端设计的协议），服务端中继对其透明——文件传输全部落在前端 `zmodem.ts` 门面：下行字节先喂 Sentry，非协议字节才进 xterm；协议字节经 `sendPty` → `conn.sendBytes`（二进制 base64 分块）回注 PTY。角色映射为协议事实：远端 rz 打印 ZRINIT → 我方发送（拖拽预存文件或弹选择器，选择器单飞防 rz 周期重发 ZRINIT 的重入）；远端 sz 打发 ZRQINIT → 我方接收（offer 自动接受，内存 Blob 保存，设计约束 ≤100MB）。传输中键盘门禁（Ctrl+C=取消）、断线/卸载发 ZABORT 尽量令远端 lrzsz 干净退出、rz 注入 10s 无应答报「未装 lrzsz/不在提示符」。已知限制：传输中另一端 attach 同 PTY 会互相干扰；初始头 `**B00…` 回显为协议固有现象。
 
 ### 终端标签页的挂载策略
 

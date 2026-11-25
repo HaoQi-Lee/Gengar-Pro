@@ -177,14 +177,17 @@ func (m *Manager) Open(h *host.Host, owner string) (string, error) {
 	return id, nil
 }
 
-func (m *Manager) Write(id, data string) error {
+// Write 写 stdin（每会话互斥串行化：x/crypto 同流并发写不安全，webapi 终端
+// 端点（termws）的 WS 上行 write/resize 帧各自独立 goroutine）。data 为原始
+// 字节——文本击键与 ZMODEM 等二进制协议帧同一路径原样进 PTY。
+func (m *Manager) Write(id string, data []byte) error {
 	s := m.get(id)
 	if s == nil {
 		return fmt.Errorf("term: unknown session %s", id)
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if _, err := s.stdin.Write([]byte(data)); err != nil {
+	if _, err := s.stdin.Write(data); err != nil {
 		return fmt.Errorf("term: write %s: %w", id, err)
 	}
 	return nil

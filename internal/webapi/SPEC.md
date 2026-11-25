@@ -20,13 +20,13 @@ package: internal/webapi
 - `chat.go` — 对话端点（全部带 `session` 路由到对应 chatSession，未知 400）：提交（任务 goroutine，Background ctx 长于 HTTP 请求）/取消（ctx cancel + 放行待决议）/确认与提问决议回填 + 对话 WS（session 参数空/未知即复活新会话；hello 带 session→重放→实时推送，读循环 90s 空闲掐断）
 - `hub.go` — 每会话事件枢纽：有界 FIFO 缓冲（2000 帧，序号单调）+ 活跃订阅者 fan-out（锁内非阻塞投递保证按序号有序）；`onIdle` 订阅数 1→0 回调；`reset()`（清缓冲 + 发 reset 帧，设置变更重建 Agent 后调用）；`hasSubs()`（reaper 判定基准）
 - `sink.go` — `userSink`（`ui.Sink` 的 web 实现）：事件推 hub；ConfirmBatch/AskUser 阻塞等 REST 决议（锁内原子认领，只决议一次）；断连按拒绝/取消放行
-- `termws.go` — 终端端点：REST 开（按主机 GetOrCreate，属主校验前置——`findHostFor` 视角过滤，他人主机 404）/关 + WS 双向流（attach 先补发回放缓冲——open 与 attach 之间的输出不丢）；`termHub` 按 sessionID fan-out（多端附加同一 PTY）+ lastSeen 记录（reaper 据此回收无订阅 1 小时的 PTY）；`termConn` 接口（含 Replay，测试注入假实现）
+- `termws.go` — 终端端点：REST 开（按主机 GetOrCreate，属主校验前置——`findHostFor` 视角过滤，他人主机 404）/关 + WS 双向流（attach 先补发回放缓冲——open 与 attach 之间的输出不丢；上行 write 帧 data 按 base64 解码为原始字节——二进制安全，ZMODEM 协议帧原样进 PTY，非法 base64 丢弃不掐连接）；`termHub` 按 sessionID fan-out（多端附加同一 PTY）+ lastSeen 记录（reaper 据此回收无订阅 1 小时的 PTY）；`termConn` 接口（含 Replay，测试注入假实现，`Write(id string, data []byte)`）
 - `xshell.go` — XShell 上传导入：base64 文件列表 → `xshell.ParseFiles` 解析预览（判重 + 重名后缀，判重集合按导入者视角）→ 勾选提交（复用 saveHost 语义，归属导入者；首错中止）
 - `users.go` — 用户管理端点（仅 admin，`admined` 包裹 authed 再验角色）：列表/创建（固定普通角色）/重置密码/删除；删除先把名下主机移交 admin（`ReassignHosts`，失败中止可重试）；重置与删除即时吊销目标用户 token；删除顺带摘除其 appcore.Session 与全部对话会话（取消在跑任务）；操作记审计。`viewerOf` 视角辅助（username + isAdmin，各主机端点共用）
 - `auditop.go` — webapi 合成审计事件统一注入：`auditOpS(user, session, tool, output, input)`（`auditOp` 为其空 session 委托）+ `clientIP`（RemoteAddr 去端口）+ `truncRunes`/`truncAuditText`（rune 安全截断，8K 带 `[+N chars]` 标注）
 - `json.go` — `writeJSON`/`writeErr`/`readJSON`（1MB 请求上限）
 - `static.go` — `StaticHandler`：fs.FS 构建带 SPA fallback 的静态托管（未命中/目录落 index.html，防目录列表泄露）；hashed assets 设 `Cache-Control: immutable`（一年），HTML `no-cache`
-- `auth_test.go` / `hosts_test.go`（含设置端点）/ `users_test.go` / `chat_test.go` / `hub_test.go` / `termws_test.go` / `xshell_test.go` / `static_test.go` / `isolation_test.go`（主机按用户隔离端到端：列表/写操作/终端/导入判重/删除移交/scope） — 各端点单测（httptest + 假 termConn/fake core，无需真实 SSH）
+- `auth_test.go` / `hosts_test.go`（含设置端点）/ `users_test.go` / `chat_test.go` / `hub_test.go` / `termws_test.go` / `xshell_test.go` / `static_test.go` / `isolation_test.go`（主机按用户隔离端到端：列表/写操作/终端/导入判重/删除移交/scope） — 各端点单测（httptest + 假 termConn/fake core，无需真实 SSH；termws 含 write 帧 base64 二进制透传与坏帧丢弃用例）
 
 ## API
 
@@ -83,7 +83,7 @@ package: internal/webapi
 **`GET /api/ws/term?id=<sessionID>`**（attach 前会话必须已存在——先经 REST open）：
 
 - 下行 `termFrame{t: data|exit}`（data 为 base64 原样；exit 可带 error）；attach 时先补发回放缓冲（最近 64KB，补发先于 subscribe 保证顺序）
-- 上行 `termFrame{t: write|resize}`（close 走 REST，不经 WS；ping 等其他帧只刷新读 deadline）
+- 上行 `termFrame{t: write|resize}`（write 的 `data` 为 base64——文本与 ZMODEM 二进制协议帧同路径，前端按 32KB 分块保证单帧 < 64KB 读限；非法 base64 丢帧不掐连接；close 走 REST，不经 WS；ping 等其他帧只刷新读 deadline）
 - 无序号（断档靠新输出推进）；回放缓冲兜底 attach 前的输出；空闲读 deadline 5 分钟，浏览器 ping 保活 2 分钟
 
 ## 依赖

@@ -1,5 +1,6 @@
 // events.ts WS 订阅层：对话事件流（自动重连 + since 续传 + 断档全量重排 + 心跳）
-// 与终端流（发送排队 + ping 保活 + 异常断开映射 exit）。心跳契约：服务端读
+// 与终端流（发送排队 + ping 保活 + 异常断开映射 exit；上行 write 帧 data 为
+// base64——文本 UTF-8 编码后转，二进制按 32KB 分块）。心跳契约：服务端读
 // 空闲 90s（chat）/ 5min（term）掐断，任意上行帧刷新 deadline。
 import type { ChatEvent, ConfirmRequestView } from "../types";
 
@@ -157,12 +158,28 @@ export function subscribeChat(session: string, h: ChatHandlers): () => void {
 
 // ---- 终端 ----
 export interface TermConn {
-  send(data: string): void;
+  send(data: string): void; // 文本（UTF-8 → base64 编码后上行）
+  sendBytes(data: Uint8Array): void; // 二进制（ZMODEM 协议字节），32KB/帧分块
   resize(cols: number, rows: number): void;
   close(): void;
 }
 
 const TERM_PING_MS = 120_000; // < 5min 服务端读 deadline
+
+// WRITE_CHUNK 二进制上行分块：32KB → base64（×4/3）+ JSON 开销后仍小于
+// 服务端 WS 单帧 64KB 读上限（termws.go SetReadLimit）。
+const WRITE_CHUNK = 32768;
+
+const enc = new TextEncoder();
+
+// bytesToB64 大数组分段 String.fromCharCode（8K/段防参数上限）。
+function bytesToB64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i += 0x8000) {
+    s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
 
 // connectTerm 终端双向流。断开不自动重连（PTY 保持，重连即恢复——由
 // 组件层决定何时重连）；ping 保活防 5min 空闲掐断（观看 tail -f 场景）。
@@ -217,7 +234,12 @@ export function connectTerm(
   };
   ws.onerror = stop; // onerror 后必触发 onclose：异常统一在 onclose 归口
   return {
-    send: (d) => sendRaw(JSON.stringify({ t: "write", data: d })),
+    send: (d) => sendRaw(JSON.stringify({ t: "write", data: bytesToB64(enc.encode(d)) })),
+    sendBytes: (d) => {
+      for (let i = 0; i < d.length; i += WRITE_CHUNK) {
+        sendRaw(JSON.stringify({ t: "write", data: bytesToB64(d.subarray(i, i + WRITE_CHUNK)) }));
+      }
+    },
     resize: (cols, rows) => sendRaw(JSON.stringify({ t: "resize", cols, rows })),
     close: () => {
       closedByUs = true;

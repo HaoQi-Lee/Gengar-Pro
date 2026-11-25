@@ -23,7 +23,7 @@ type termConn interface {
 	FindByHost(hostID, owner string) (string, bool)
 	Owner(id string) (string, bool)
 	Exists(id string) bool
-	Write(id, data string) error
+	Write(id string, data []byte) error
 	Resize(id string, cols, rows int) error
 	Close(id string)
 	CloseHost(hostID string)
@@ -296,7 +296,14 @@ func (s *Server) handleTermWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		switch f.T {
 		case "write":
-			if err := s.termMgr.Write(id, f.Data); err != nil {
+			if f.Data == "" {
+				continue
+			}
+			raw, err := base64.StdEncoding.DecodeString(f.Data)
+			if err != nil {
+				continue // 客户端坏帧：丢弃不掐连接（会话死亡走 Write 报错路径）
+			}
+			if err := s.termMgr.Write(id, raw); err != nil {
 				// 会话已死（读循环与 REST close/远端退出的竞态）：补发
 				// exit 帧并停止转发，按键不再无声消失——浏览器提示重开。
 				termExitThenDrain(conn)
