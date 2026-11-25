@@ -32,6 +32,9 @@ export interface ZmodemHooks {
   sendPty(b: Uint8Array): void; // 协议字节/rz 命令注入 → WS 二进制上行
   onState(s: ZmodemState): void; // 状态快照（不可变对象）
   pickFiles(): Promise<File[] | null>; // 无预存文件时弹系统选择器
+  /** 下载落盘（默认 Zmodem.Browser.save_to_disk——内存 Blob + a[download]）；
+   * 测试注入以在 node 下驱动完整接收回路。 */
+  saveFile?(name: string, payloads: Uint8Array[]): void;
 }
 
 export interface ZmodemCtl {
@@ -172,9 +175,14 @@ export function createZmodem(h: ZmodemHooks): ZmodemCtl {
       });
       offer
         .accept()
-        .then(() => {
-          // 内存 Blob + a[download]：设计约束 ≤100MB 内可接受
-          Zmodem.Browser.save_to_disk(offer.get_payloads(), det.name);
+        .then((payloads: Uint8Array[]) => {
+          // accept 的决议值即载荷数组（zmodem.js 0.1.10 README 写的
+          // offer.get_payloads() 并不存在——文档缺陷，库实现是
+          // _accept_func(...).then(_get_spool)，见 zsession.js）。
+          // 内存 Blob + a[download]：设计约束 ≤100MB 内可接受。
+          const save =
+            h.saveFile ?? ((name: string, p: Uint8Array[]) => Zmodem.Browser.save_to_disk(p, name));
+          save(det.name, payloads);
         })
         .catch((err: unknown) => {
           set({ phase: "error", message: errText(err) });

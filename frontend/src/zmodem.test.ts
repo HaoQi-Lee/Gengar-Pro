@@ -58,6 +58,58 @@ describe("createZmodem", () => {
     ctl.sendFiles([{ name: "a.txt", size: 3 } as unknown as File]);
     expect(h.sendPty).toHaveBeenCalledWith(new TextEncoder().encode("rz\r"));
   });
+
+  it("完整接收回路：accept 决义值即载荷 → saveFile 收到文件字节", async () => {
+    const saved: { name: string; payloads: Uint8Array[] }[] = [];
+    let peerSession: any = null;
+    let peerSentry: any = null;
+    const h = {
+      writeTerm: vi.fn(),
+      sendPty: vi.fn((b: Uint8Array) => {
+        peerSentry?.consume(Uint8Array.from(b)); // 我方协议响应 → 对端
+      }),
+      onState: vi.fn(),
+      pickFiles: vi.fn(async () => null),
+      saveFile: (name: string, payloads: Uint8Array[]) => saved.push({ name, payloads }),
+    };
+    const ctl = createZmodem(h);
+
+    // 对端（模拟远端 sz）也是一台 Sentry：见我方 ZRINIT 应答 → 确认出 Send 会话
+    peerSentry = new Zmodem.Sentry({
+      to_terminal: () => {},
+      on_detect: (d: any) => {
+        peerSession = d.confirm();
+      },
+      on_retract: () => {},
+      sender: (octets: number[]) => ctl.consume(Uint8Array.from(octets)),
+    });
+
+    // 开局：对端先发 ZRQINIT（真 lsz 的第一步）→ 我方检测出接收会话并回 ZRINIT，
+    // 该应答经 sendPty 喂对端 Sentry 建立其 Send 会话
+    ctl.consume(Uint8Array.from(Zmodem.Header.build("ZRQINIT").to_hex()));
+    await vi.waitFor(() => expect(peerSession).not.toBeNull());
+
+    // 驱动完整传输：offer → 数据 → 结束 → 关会话
+    const content = [0x41, 0x42, 0x43, 0x0d, 0x0a, 0xff, 0x00];
+    const xfer = await peerSession.send_offer({
+      name: "loop.txt",
+      size: content.length,
+      mtime: new Date(0),
+      files_remaining: 1,
+      bytes_remaining: content.length,
+    });
+    xfer.send(content.slice());
+    await xfer.end([]);
+    await peerSession.close();
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.name).toBe("loop.txt");
+    const got = (saved[0]!.payloads as unknown as Uint8Array[]).reduce<number[]>(
+      (acc, p) => [...acc, ...Array.from(p)],
+      []
+    );
+    expect(got).toEqual(content);
+  });
 });
 
 describe("fmtXfer", () => {
