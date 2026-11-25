@@ -13,7 +13,7 @@ package: internal/term
 ## 文件
 
 - `term.go` — `Manager`/`Session`：拨号 + RequestPty + Shell、输出泵（base64 + 回放环形缓冲 64KB）、退出看护、写入互斥、按主机拨号串行化、按会话/按主机/全量关闭
-- `term_test.go` — 进程内 SSH 假服务器（PTY/shell 放行 + 回显 + window-change 记录）与用例（回显、resize、未知会话、幂等关闭、按主机关闭、FindByHost/Exists、服务器断连、并发压力、同主机顺序复用、同主机并发单拨号、属主隔离）
+- `term_test.go` — 进程内 SSH 假服务器（PTY/shell 放行 + 回显 + window-change 记录）与用例（回显、二进制回显、resize、未知会话、幂等关闭、按主机关闭、FindByHost/Exists、服务器断连、并发压力、同主机顺序复用、同主机并发单拨号、属主隔离）
 
 ## API
 
@@ -21,7 +21,7 @@ package: internal/term
 - `type EventType int`（`EventData` / `EventExit`）与 `type Event struct{ Type; ID; Data; Err }` — 事件包；Data 为 base64 编码的输出块（终端流含任意二进制转义序列）
 - `NewManager(secrets host.SecretStore, emit Emitter) *Manager` — 创建会话管理器
 - `(m *Manager) Open(h *host.Host, owner string) (string, error)` — 拨号（15s 全握手超时）+ RequestPty(xterm-256color, 24 行 × 80 列) + Shell，返回**随机 16 字节 hex** 会话 ID（不可枚举）；启动输出泵与退出看护。按「主机+属主」单会话的 GetOrCreate：同主机同属主已有在线会话则幂等返回其 ID，不同属主各开各的（多用户隔离）；per-键互斥锁（锁内重查）串行化并发 Open，消除检查-拨号-注册窗口的双拨号（TOCTOU）
-- `(m *Manager) Write(id, data string) error` — 写 stdin（每会话互斥串行化：x/crypto 同流并发写不安全，webapi 的 WS 上行 write/resize 帧各自独立 goroutine）
+- `(m *Manager) Write(id string, data []byte) error` — 写 stdin（每会话互斥串行化：x/crypto 同流并发写不安全，webapi 的 WS 上行 write/resize 帧各自独立 goroutine）。data 为原始字节——文本击键与 ZMODEM 等二进制协议帧同一路径原样进 PTY（webapi 侧解码 base64 后传入，2026-11-25 终端 ZMODEM 变更集）
 - `(m *Manager) Resize(id string, cols, rows int) error` — window-change（注意参数序转换为 x/crypto 的 (h, w)）
 - `(m *Manager) Close(id string)` — 关闭会话（幂等；stdin/session/client 三层关闭）
 - `(m *Manager) CloseHost(hostID string)` — 关闭某主机的全部会话（DeleteHost 时调用）
