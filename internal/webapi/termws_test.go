@@ -3,6 +3,7 @@
 package webapi
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"net/http/httptest"
@@ -24,13 +25,13 @@ type fakeTerm struct {
 	next   int
 	byHost map[string]string   // 「hostID\x00owner」→ 会话 id（按属主隔离）
 	owners map[string]string   // 会话 id → 属主
-	writes map[string][]string // 在线会话（Exists 依据）
+	writes map[string][][]byte // 在线会话（Exists 依据）；每次 Write 的原始字节
 	closed []string
 	replay map[string][]byte // 会话 id → 回放缓冲（Replay 依据）
 }
 
 func newFakeTerm() *fakeTerm {
-	return &fakeTerm{byHost: map[string]string{}, owners: map[string]string{}, writes: map[string][]string{}, replay: map[string][]byte{}}
+	return &fakeTerm{byHost: map[string]string{}, owners: map[string]string{}, writes: map[string][][]byte{}, replay: map[string][]byte{}}
 }
 
 func (f *fakeTerm) Open(h *host.Host, owner string) (string, error) {
@@ -44,7 +45,7 @@ func (f *fakeTerm) Open(h *host.Host, owner string) (string, error) {
 	id := fmt.Sprintf("t%d", f.next)
 	f.byHost[key] = id
 	f.owners[id] = owner
-	f.writes[id] = []string{} // 开即在线（Exists 依据 writes 键，Close 时删除）
+	f.writes[id] = [][]byte{} // 开即在线（Exists 依据 writes 键，Close 时删除）
 	return id, nil
 }
 
@@ -69,13 +70,13 @@ func (f *fakeTerm) Exists(id string) bool {
 	return ok
 }
 
-func (f *fakeTerm) Write(id, data string) error {
+func (f *fakeTerm) Write(id string, data []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.writes[id]; !ok { // 与真实 Manager 一致：死会话写报错
 		return fmt.Errorf("term: unknown session %s", id)
 	}
-	f.writes[id] = append(f.writes[id], data)
+	f.writes[id] = append(f.writes[id], append([]byte(nil), data...))
 	return nil
 }
 
@@ -115,10 +116,10 @@ func (f *fakeTerm) pushReplay(id string, p []byte) {
 	f.replay[id] = append(f.replay[id], p...)
 }
 
-func (f *fakeTerm) wrote(id string) []string {
+func (f *fakeTerm) wrote(id string) [][]byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.writes[id]...)
+	return append([][]byte(nil), f.writes[id]...)
 }
 
 func (f *fakeTerm) closeCount() int {
@@ -231,17 +232,17 @@ func TestTermWSFlow(t *testing.T) {
 		t.Fatalf("frame = %+v", f)
 	}
 
-	// 上行 write 帧 → Manager.Write
-	_ = c.WriteJSON(termFrame{T: "write", Data: "ls\n"})
+	// 上行 write 帧（base64）→ Manager.Write 原始字节
+	_ = c.WriteJSON(termFrame{T: "write", Data: "bHMK"}) // base64("ls\n")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if w := ft.wrote(id); len(w) == 1 && w[0] == "ls\n" {
+		if w := ft.wrote(id); len(w) == 1 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if w := ft.wrote(id); len(w) != 1 || w[0] != "ls\n" {
-		t.Fatalf("writes = %v", w)
+	if w := ft.wrote(id); len(w) != 1 || string(w[0]) != "ls\n" {
+		t.Fatalf("writes = %x, want [ls\\n]", w)
 	}
 
 	// WS 断开不关 PTY
@@ -440,8 +441,58 @@ func TestTermWriteAfterCloseGetsExit(t *testing.T) {
 
 	c := dialTerm(t, hostAddr, ck, id)
 	doJSON(t, s, "POST", "/api/term/"+id+"/close", "", ck)
-	_ = c.WriteJSON(termFrame{T: "write", Data: "x"})
+	_ = c.WriteJSON(termFrame{T: "write", Data: base64.StdEncoding.EncodeToString([]byte("x"))})
 	if f := readTermFrame(t, c); f.T != "exit" {
 		t.Fatalf("frame = %+v; want exit", f)
 	}
 }
+
+// TestTermWSWriteBinary 上行 write 帧按 base64 解码为原始字节透传——
+// ZMODEM 二进制帧（含 0x80+ 字节）不得被旧 UTF-8 文本通路改写。
+func TestTermWSWriteBinary(t *testing.T) {
+	s, ft, hostAddr, ck, hostID := newTermTestServer(t)
+	_, m := doJSON(t, s, "POST", "/api/hosts/"+hostID+"/term", "", ck)
+	id, _ := m["id"].(string)
+
+	c := dialTerm(t, hostAddr, ck, id)
+	waitSubscribed(t, s, id, 1)
+
+	bin := []byte{0x00, 0x18, 0x42, 0x80, 0xff, 0xfe, 0x2a}
+	_ = c.WriteJSON(termFrame{T: "write", Data: base64.StdEncoding.EncodeToString(bin)})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if w := ft.wrote(id); len(w) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if w := ft.wrote(id); len(w) != 1 || !bytes.Equal(w[0], bin) {
+		t.Fatalf("writes = %x, want [%x]", w, bin)
+	}
+}
+
+// TestTermWSWriteInvalidBase64 非法 base64 的 write 帧被丢弃且不掐断连接：
+// 后续合法帧照常透传（客户端坏帧不是会话死亡信号）。
+func TestTermWSWriteInvalidBase64(t *testing.T) {
+	s, ft, hostAddr, ck, hostID := newTermTestServer(t)
+	_, m := doJSON(t, s, "POST", "/api/hosts/"+hostID+"/term", "", ck)
+	id, _ := m["id"].(string)
+
+	c := dialTerm(t, hostAddr, ck, id)
+	waitSubscribed(t, s, id, 1)
+
+	_ = c.WriteJSON(termFrame{T: "write", Data: "!!!"})
+	time.Sleep(100 * time.Millisecond)
+	_ = c.WriteJSON(termFrame{T: "write", Data: base64.StdEncoding.EncodeToString([]byte("ok"))})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if w := ft.wrote(id); len(w) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if w := ft.wrote(id); len(w) != 1 || string(w[0]) != "ok" {
+		t.Fatalf("writes = %x, want [ok]", w)
+	}
+}
+

@@ -1,6 +1,7 @@
 package term
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -177,7 +178,7 @@ func waitGone(t *testing.T, m *Manager, id string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := m.Write(id, "x"); err != nil {
+		if err := m.Write(id, []byte("x")); err != nil {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -204,7 +205,7 @@ func TestOpenWriteEcho(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("等待 pty-req 超时")
 	}
-	if err := m.Write(id, "hi"); err != nil {
+	if err := m.Write(id, []byte("hi")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	ev := waitEvent(t, events, id)
@@ -238,7 +239,7 @@ func TestResizeSendsWindowChange(t *testing.T) {
 
 func TestWriteUnknownSession(t *testing.T) {
 	m := NewManager(host.MemoryStore{}, func(Event) {})
-	if err := m.Write("nope", "x"); err == nil {
+	if err := m.Write("nope", []byte("x")); err == nil {
 		t.Fatal("未知会话 Write 应报错")
 	}
 	if err := m.Resize("nope", 80, 24); err == nil {
@@ -258,7 +259,7 @@ func TestCloseIsIdempotentAndEmitsExit(t *testing.T) {
 	if ev.Type != EventExit {
 		t.Fatalf("Close 后应收到 exit，got %+v", ev)
 	}
-	if err := m.Write(id, "x"); err == nil {
+	if err := m.Write(id, []byte("x")); err == nil {
 		t.Fatal("关闭后 Write 应报错（会话已从表移除）")
 	}
 }
@@ -272,10 +273,10 @@ func TestCloseHost(t *testing.T) {
 	id1 := openOn(t, m, "h1", addr)
 	id2 := openOn(t, m, "h2", addr)
 	m.CloseHost("h1")
-	if err := m.Write(id1, "x"); err == nil {
+	if err := m.Write(id1, []byte("x")); err == nil {
 		t.Fatal("CloseHost 后 h1 会话应已移除")
 	}
-	if err := m.Write(id2, "x"); err != nil {
+	if err := m.Write(id2, []byte("x")); err != nil {
 		t.Fatalf("h2 会话不应受影响: %v", err)
 	}
 }
@@ -455,7 +456,7 @@ func TestConcurrentStress(t *testing.T) {
 					errCh <- fmt.Errorf("open %s: %w", hostID, err)
 					continue
 				}
-				_ = m.Write(id, "x")
+				_ = m.Write(id, []byte("x"))
 				_ = m.Resize(id, 80+i%10, 24)
 				if i%3 == 0 {
 					m.Close(id)
@@ -470,4 +471,32 @@ func TestConcurrentStress(t *testing.T) {
 		t.Errorf("压力用例: %v", e)
 	}
 	// 不断言事件计数（时序无关）；能跑完不死锁不 panic 即通过。
+}
+
+// TestWriteBinaryEcho 二进制写入原样回显：锁死 Write([]byte) 契约——
+// ZMODEM 帧里的 0x80+ 字节经 PTY 往返不得变形。
+func TestWriteBinaryEcho(t *testing.T) {
+	addr, _, ptyCh, _ := newTermServer(t, "opuser", "oppass")
+	events := make(chan Event, 64)
+	m := NewManager(host.MemoryStore{"t1-pass": "oppass"}, func(ev Event) { events <- ev })
+	t.Cleanup(m.CloseAll)
+
+	id := openOn(t, m, "t1", addr)
+	select { // 消费初始 PTY 尺寸通知
+	case <-ptyCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("等待 pty-req 超时")
+	}
+	bin := []byte{0x00, 0x18, 0x42, 0x80, 0xff, 0x2a, 0x2a}
+	if err := m.Write(id, bin); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ev := waitEvent(t, events, id)
+	got, err := base64.StdEncoding.DecodeString(ev.Data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !bytes.Equal(got, bin) {
+		t.Fatalf("回显 = %x, want %x", got, bin)
+	}
 }
