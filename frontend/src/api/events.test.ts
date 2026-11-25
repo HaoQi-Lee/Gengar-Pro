@@ -187,24 +187,53 @@ describe("subscribeChat", () => {
 });
 
 describe("connectTerm", () => {
-  it("open 前发送排队，open 后按序冲刷；data/exit 分发", () => {
+  it("open 前发送排队，open 后按序冲刷；data/exit 分发；文本 base64 编码", () => {
     const onData = vi.fn();
     const onExit = vi.fn();
     const conn = connectTerm("t1", { onData, onExit });
     const ws = FakeWS.instances[0]!;
     expect(ws.url).toBe("ws://localhost/api/ws/term?id=t1");
-    conn.send("aGk=");
+    conn.send("hi"); // 文本按 UTF-8 → base64 编码
     conn.resize(80, 24);
     expect(ws.sent).toEqual([]); // 未 open：排队不丢
     ws.open();
     expect(ws.sent).toEqual([
-      JSON.stringify({ t: "write", data: "aGk=" }),
+      JSON.stringify({ t: "write", data: "aGk=" }), // base64("hi")
       JSON.stringify({ t: "resize", cols: 80, rows: 24 }),
     ]);
     ws.deliver({ t: "data", data: "aGk=" });
     expect(onData).toHaveBeenCalledWith("aGk=");
     ws.deliver({ t: "exit" });
     expect(onExit).toHaveBeenCalledWith("");
+    conn.close();
+  });
+
+  it("send 的多字节文本按 UTF-8 编码（中文不变形）", () => {
+    const conn = connectTerm("t1", { onData: vi.fn(), onExit: vi.fn() });
+    const ws = FakeWS.instances[0]!;
+    ws.open();
+    conn.send("中"); // UTF-8: e4 b8 ad
+    expect(ws.sent).toEqual([JSON.stringify({ t: "write", data: "5Lit" })]);
+    conn.close();
+  });
+
+  it("sendBytes 二进制分块（32KB/帧）且 open 前排队按序冲刷", () => {
+    const conn = connectTerm("t1", { onData: vi.fn(), onExit: vi.fn() });
+    const ws = FakeWS.instances[0]!;
+    const big = new Uint8Array(40000);
+    big.fill(0xab);
+    conn.sendBytes(big); // 未 open：两帧排队
+    expect(ws.sent).toEqual([]);
+    ws.open();
+    expect(ws.sent).toHaveLength(2);
+    const b64ToBytes = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+    const frames = ws.sent.map((s) => JSON.parse(s) as { t: string; data: string });
+    expect(frames.every((f) => f.t === "write")).toBe(true);
+    // 单帧 b64 后必须小于服务端 64KB 读限
+    expect(frames.every((f) => f.data.length < 65536)).toBe(true);
+    const joined = [...b64ToBytes(frames[0]!.data), ...b64ToBytes(frames[1]!.data)];
+    expect(joined.length).toBe(40000);
+    expect(joined.every((v) => v === 0xab)).toBe(true);
     conn.close();
   });
 
