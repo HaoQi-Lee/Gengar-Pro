@@ -121,6 +121,15 @@ export function createZmodem(h: ZmodemHooks): ZmodemCtl {
       }
       session = detection.confirm();
       detection = null;
+      const sess = session; // 闭包固定引用：session_end 复位外层引用后链路仍可收尾
+      // 会话结束即复位门禁（与 startReceive 对称）：close() 的 ZFIN 握手或对端
+      // 主动结束触发——否则上传完成后 isBusy 恒真，键盘被门禁吞掉、只能 Ctrl+C
+      sess.on("session_end", () => {
+        if (state.phase !== "error") {
+          set({ phase: "done", message: "上传完成" });
+        }
+        reset();
+      });
       let total = 0;
       for (const f of files) {
         total += f.size;
@@ -131,7 +140,7 @@ export function createZmodem(h: ZmodemHooks): ZmodemCtl {
         startedAt: now(),
         message: files.length > 1 ? `共 ${files.length} 个文件` : "",
       });
-      Zmodem.Browser.send_files(session, files, {
+      Zmodem.Browser.send_files(sess, files, {
         on_progress: (f: File, xfer: any) => {
           if (xfer) {
             set({ name: f.name, bytes: base + xfer.get_offset() });
@@ -142,11 +151,15 @@ export function createZmodem(h: ZmodemHooks): ZmodemCtl {
           set({ message: `已完成 ${f.name}` });
         },
       })
-        .then(() => session.close())
-        .then(() => {
-          set({ phase: "done", message: "上传完成" });
-        })
+        .then(() => sess.close())
         .catch((err: unknown) => {
+          // 失败路径同样复位（会话已不可用），不让用户必须 Ctrl+C
+          try {
+            sess.abort();
+          } catch {
+            /* 已结束 */
+          }
+          reset();
           set({ phase: "error", message: errText(err) });
         });
     };

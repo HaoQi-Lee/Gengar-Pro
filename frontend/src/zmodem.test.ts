@@ -59,6 +59,56 @@ describe("createZmodem", () => {
     expect(h.sendPty).toHaveBeenCalledWith(new TextEncoder().encode("rz\r"));
   });
 
+  it("完整上传回路：会话结束 busy 解除，字节完整送达对端", async () => {
+    // send_files 内部用 FileReader（node 无）：垫 Chrome 式「一次 partial 返回
+    // 全量」——数据经 onprogress 发送、onload 收尾（zmodem_browser.js 语义）。
+    class FakeFileReader {
+      onerror: unknown;
+      onprogress: ((e: { target: { result: ArrayBuffer } }) => void) | null = null;
+      onload: ((e: { target: { result: ArrayBuffer } }) => void) | null = null;
+      readAsArrayBuffer(f: Blob): void {
+        void f.arrayBuffer().then((ab) => {
+          this.onprogress?.({ target: { result: ab } });
+          this.onload?.({ target: { result: ab } });
+        });
+      }
+    }
+    (globalThis as any).FileReader = FakeFileReader;
+
+    const content = [0x61, 0x62, 0x00, 0xff, 0x0a];
+    const received: number[] = [];
+    let peer: any = null;
+    const h = {
+      writeTerm: vi.fn(),
+      sendPty: vi.fn((b: Uint8Array) => {
+        peer?.consume(Array.from(b)); // 我方协议输出 → 对端 rz 会话
+      }),
+      onState: vi.fn(),
+      pickFiles: vi.fn(async () => null),
+    };
+    const ctl = createZmodem(h);
+
+    // 拖拽路径：预存文件（rz\r 注入时对端未建，仅丢弃——真实场景进 PTY）
+    const file = new File([new Uint8Array(content)], "up.txt");
+    ctl.sendFiles([file]);
+
+    // 对端（模拟远端 rz）：裸 Receive 会话，start() 即发 ZRINIT
+    peer = new Zmodem.Session.Receive();
+    peer.set_sender((octets: number[]) => ctl.consume(Uint8Array.from(octets)));
+    peer.on("offer", (offer: any) => {
+      offer.on("input", (octets: number[]) => {
+        received.push(...octets);
+      });
+      offer.accept();
+    });
+    peer.start(); // ZRINIT → 我方检测出 send 会话 → 发送预存文件
+
+    await vi.waitFor(() => expect(received).toEqual(content)); // 文件完整送达
+    // 关键回归断言：会话结束后门禁解除（不需要 Ctrl+C）
+    await vi.waitFor(() => expect(ctl.isBusy()).toBe(false));
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "done" }));
+  });
+
   it("完整接收回路：accept 决义值即载荷 → saveFile 收到文件字节", async () => {
     const saved: { name: string; payloads: Uint8Array[] }[] = [];
     let peerSession: any = null;
